@@ -21,7 +21,7 @@ func Secrets() *cli.Command {
 	return &cli.Command{
 		Name:  "secrets",
 		Short: "unlock and inspect the local secret store",
-		Usage: `usage: devz secrets <unlock|status|list|show|edit> [entry]
+		Usage: `usage: devz secrets <cached|env|unlock|status|list|show|edit> [args]
 
   cached        exit 0 if the agent cache is warm, 1 if cold (no output)
   env [names]   print export lines for the configured entries, for eval
@@ -46,7 +46,7 @@ agent cache is cold. Warming it from a terminal once is the fix.`,
 
 func runSecrets(ctx *cli.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("expected a subcommand (unlock, status, list, show, edit)")
+		return fmt.Errorf("expected a subcommand (cached, env, unlock, status, list, show, edit)")
 	}
 	cfg := ctx.Config
 	if cfg.Secrets.Backend != "pass" {
