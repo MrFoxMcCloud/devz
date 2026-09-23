@@ -1,0 +1,4 @@
+/devz
+/dist/
+*.test
+.DS_Store

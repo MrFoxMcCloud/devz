@@ -1,0 +1,64 @@
+# goreleaser build/release config.
+#
+#   local check:  goreleaser release --snapshot --clean
+#   real release: git tag v0.1.0 && git push --tags   (CI does the rest)
+version: 2
+
+project_name: devz
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: devz
+    main: .
+    binary: devz
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: devz
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - completions/*
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: MrFoxMcCloud
+    name: devz
+
+# A tap makes `brew install MrFoxMcCloud/tap/devz` work for teammates, which is
+# the difference between a tool people update and one that goes stale. It needs
+# a homebrew-tap repo and a token with write access to it, so it is off until
+# that exists.
+#
+# brews:
+#   - repository:
+#       owner: MrFoxMcCloud
+#       name: homebrew-tap
+#     directory: Formula
+#     homepage: https://github.com/MrFoxMcCloud/devz
+#     description: Local development environment commands
+#     install: |
+#       bin.install "devz"
+#       zsh_completion.install "completions/_devz"
+#       bash_completion.install "completions/devz.bash"
