@@ -54,6 +54,7 @@ func runDoctor(ctx *cli.Context, args []string) error {
 		}
 	}
 
+	add(checkBuild(ctx.Version))
 	add(checkConfig(cfg))
 	add(checkTools(cfg)...)
 	add(checkPython())
@@ -95,6 +96,17 @@ func runDoctor(ctx *cli.Context, args []string) error {
 		return fmt.Errorf("%d check(s) failed", failures)
 	}
 	return nil
+}
+
+// checkBuild flags a work-in-progress devz on PATH. Installing one to test it
+// is normal; forgetting it is there is how a stale, unreleased build ends up
+// answering every call for weeks.
+func checkBuild(version string) result {
+	if isRelease(version) {
+		return ok("devz:build", "release "+version)
+	}
+	return warn("devz:build", "dev build "+version,
+		"go install github.com/MrFoxMcCloud/devz@v1 to return to a release")
 }
 
 func checkConfig(cfg config.Config) result {

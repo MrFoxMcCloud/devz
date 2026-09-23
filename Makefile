@@ -7,9 +7,17 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BIN) .
 
-# Installs to GOBIN, or $(go env GOPATH)/bin. Make sure that is on your PATH.
+# Installs the working tree to GOBIN, or $(go env GOPATH)/bin, replacing the
+# devz on PATH. Return to a release with
+#   go install github.com/MrFoxMcCloud/devz@v1
+# or keep both: `make install BIN=devz2` installs the work in progress beside
+# it. `devz version` says which one you are running.
+GOBIN_DIR := $(or $(shell go env GOBIN),$(shell go env GOPATH)/bin)
+
 install:
-	go install -ldflags "$(LDFLAGS)" .
+	@case "$(BIN)" in devz-*) \
+		echo "make install: $(BIN) would be picked up as a devz plugin; pick a name without the devz- prefix" >&2; exit 1;; esac
+	go build -ldflags "$(LDFLAGS)" -o "$(GOBIN_DIR)/$(BIN)" .
 
 test:
 	go test ./...

@@ -26,8 +26,12 @@ commands:
 ## Install
 
 ```sh
-go install github.com/MrFoxMcCloud/devz@latest     # needs $(go env GOPATH)/bin on PATH
+go install github.com/MrFoxMcCloud/devz@v1     # needs $(go env GOPATH)/bin on PATH
 ```
+
+`@v1` means "the newest 1.x.y". Pin tighter with `@v1.2` (newest 1.2.x) or
+`@v1.2.3`. `@latest` also stays on v1: a v2 would live at a different module
+path (`.../devz/v2`), so no install jumps a major version by accident.
 
 or grab a binary from [releases](https://github.com/MrFoxMcCloud/devz/releases),
 or build from source with `make build`.
@@ -95,6 +99,7 @@ Every check that applies to this machine, with the fix for anything off.
 | `pass:entries` | configured secrets missing from the store (checked on disk, so doctor never triggers a prompt of its own) |
 | `pass:backup` | a store with no git remote: one copy, one disk |
 | `gh:auth` | which GitHub account is actually active |
+| `devz:build` | a work-in-progress devz installed on PATH instead of a release |
 
 ### `devz secrets`
 
@@ -152,13 +157,49 @@ at completion time.
 
 ```sh
 make build           # ./devz, version stamped from git describe
+make install         # install the working tree as the devz on PATH
 make vet test fmt
 make completions     # regenerate the checked-in completion scripts
 goreleaser release --snapshot --clean    # dry-run a release
 ```
 
-Release: `git tag v0.1.0 && git push --tags`. CI runs goreleaser and publishes
-linux/darwin × amd64/arm64 archives.
+Testing a change usually means running it as `devz`: `account` is per-repo,
+plugins come from PATH, and completion calls `devz` by name. So `make install`
+replaces the installed devz with your working tree, and one command puts the
+release back:
+
+```sh
+make install                                   # try the work in progress
+go install github.com/MrFoxMcCloud/devz@v1     # back to the latest release
+devz version                                   # "..., dev build" if it is not a release
+```
+
+`devz doctor` warns (`devz:build`) while a dev build is installed, so one does
+not linger unnoticed. To keep both, install the work in progress under another
+name: `make install BIN=devz2`. Not `devz-something`: that would be picked up
+as a plugin. If a change touches the config format, give the dev build its own
+file with `DEVZ_CONFIG=./dev-config.json`.
+
+### Versioning
+
+[Semantic versioning](https://semver.org). For a CLI, the compatibility surface
+is the commands, flags, exit codes, config format and any output that scripts
+parse:
+
+| bump | when | example |
+|---|---|---|
+| major | something that works today stops working | removing a command or flag, a config change that makes existing files fail to load |
+| minor | something new, old usage unaffected | a new subcommand, doctor check or optional config field |
+| patch | fixes | a wrong fix hint, a doc correction |
+
+Release: `git tag v1.2.3 && git push origin v1.2.3`. CI runs goreleaser and
+publishes linux/darwin × amd64/arm64 archives.
+
+A major version needs more than a tag. Go requires the module path to end in
+`/v2` (in `go.mod` and every internal import) before `v2.x.y` tags install.
+While v2 is in progress, cut `release/v1` from the last v1 tag and ship v1
+fixes from there. Tag v2 work as prereleases (`v2.0.0-alpha.1`), which
+`@latest` ignores.
 
 Zero third-party dependencies, deliberately — it builds offline and instantly,
 and a tool people are told to install should not be a supply-chain question.

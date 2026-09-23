@@ -67,4 +67,10 @@ Run `make fmt vet test build` before calling a change done.
   `t.TempDir()` so a test never reads the real config. Tests must not call
   out to `pass` or `gpg`.
 - Releases: push a `vX.Y.Z` tag, and goreleaser builds linux/darwin ×
-  amd64/arm64 in CI.
+  amd64/arm64 in CI. Semver rules are in README.md under Versioning. A breaking
+  change to commands, flags, exit codes or the config format is a major bump.
+- Install dev builds only through `make install` (or `make install BIN=devz2`
+  to keep the release alongside). Never `cp` a binary onto PATH. `devz doctor`'s
+  `devz:build` check and `devz version` flag a dev build; `isRelease` in
+  `version.go` decides, and its tests list the version shapes it must reject.
+  Never name a dev binary `devz-*`: that makes it a plugin.
