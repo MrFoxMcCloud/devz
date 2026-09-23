@@ -106,11 +106,13 @@ Every check that applies to this machine, with the fix for anything off.
 ```sh
 devz secrets cached         # exit 0 if the cache is warm, 1 if cold; no output
 devz secrets env [names]    # export lines for secrets.envVars, for eval
+devz secrets exec [names] -- <cmd> [args]  # run cmd with those secrets in its env
 devz secrets unlock         # warm the gpg-agent cache
 devz secrets status         # cache warmth + which entries exist
 devz secrets list           # the entries this machine expects
 devz secrets show <entry>   # delegates to pass
 devz secrets edit <entry>   # rotate; delegates to pass
+devz secrets add <entry> [--env NAME]  # pass insert, then record it in the config
 ```
 
 `env` replaces exporting tokens from a shell rc file. `secrets.envVars` maps a
@@ -120,6 +122,23 @@ time instead of sitting in plaintext on disk:
 ```sh
 devz secrets cached && eval "$(devz secrets env)"   # skip quietly on a cold cache
 ```
+
+`exec` is for launchers, such as an MCP server wrapper that Claude spawns
+without a TTY. The values go straight into the command's environment, never
+through stdout or `eval`, and devz is replaced by the command, so stdio,
+signals and the exit status pass through. Unlike `env`, every name given must
+be in `secrets.envVars`:
+
+```sh
+exec devz secrets exec CRM_API_TOKEN -- uvx dasnuve-crm
+```
+
+`add` stores a new secret with `pass insert` and appends it to
+`secrets.entries`, so `status` and `doctor` start tracking it. With
+`--env NAME` it also maps the entry to `NAME` in `secrets.envVars`, so the next
+`devz secrets env` exports it. `add` refuses an entry already in the store
+(change that with `edit`). Pipe the value in to skip the prompt:
+`echo "$TOKEN" | devz secrets add team/api-token --env TEAM_API_TOKEN`.
 
 `unlock` exists because processes spawned **without a TTY** — MCP servers,
 editor extensions — cannot show a passphrase prompt, so they fail at startup on
