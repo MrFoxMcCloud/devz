@@ -8,6 +8,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,10 @@ import (
 
 	"github.com/MrFoxMcCloud/devz/internal/config"
 )
+
+// ErrSilent makes a command exit non-zero without printing anything, for
+// commands whose exit status is the whole answer.
+var ErrSilent = errors.New("")
 
 // Command is one built-in subcommand.
 type Command struct {
@@ -96,7 +101,9 @@ func (a *App) Run(args []string) int {
 
 	if cmd := a.lookup(name); cmd != nil {
 		if err := cmd.Run(ctx, rest); err != nil {
-			fmt.Fprintf(ctx.Stderr, "devz %s: %v\n", name, err)
+			if !errors.Is(err, ErrSilent) {
+				fmt.Fprintf(ctx.Stderr, "devz %s: %v\n", name, err)
+			}
 			return 1
 		}
 		return 0

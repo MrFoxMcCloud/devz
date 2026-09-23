@@ -23,6 +23,7 @@ func Secrets() *cli.Command {
 		Short: "unlock and inspect the local secret store",
 		Usage: `usage: devz secrets <unlock|status|list|show|edit> [entry]
 
+  cached        exit 0 if the agent cache is warm, 1 if cold (no output)
   env [names]   print export lines for the configured entries, for eval
   unlock        warm the gpg-agent cache so tools without a TTY can read secrets
   status        whether the cache is warm, and which entries exist
@@ -60,6 +61,14 @@ func runSecrets(ctx *cli.Context, args []string) error {
 		return unlock(ctx)
 	case "status":
 		return secretsStatus(ctx)
+	case "cached":
+		// Exit status only: meant for shell guards like
+		//   devz secrets cached && eval "$(devz secrets env FOO)"
+		// so a cold cache never turns opening a terminal into a prompt.
+		if checkAgentCache().status != statusOK {
+			return cli.ErrSilent
+		}
+		return nil
 	case "env":
 		return secretsEnv(ctx, args[1:])
 	case "list":
