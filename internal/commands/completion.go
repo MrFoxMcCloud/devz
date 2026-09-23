@@ -67,7 +67,7 @@ _devz() {
       case $line[1] in
         secrets)
           local -a subs
-          subs=(unlock status list show edit)
+          subs=(unlock status list show edit env)
           if (( CURRENT == 2 )); then
             _describe -t subcommands 'secrets subcommand' subs
           elif [[ $line[2] == (show|edit) ]]; then
@@ -110,7 +110,7 @@ _devz() {
   case "${COMP_WORDS[1]}" in
     secrets)
       if [ "$COMP_CWORD" -eq 2 ]; then
-        COMPREPLY=( $(compgen -W "unlock status list show edit" -- "$cur") )
+        COMPREPLY=( $(compgen -W "unlock status list show edit env" -- "$cur") )
       elif [ "$prev" = show ] || [ "$prev" = edit ]; then
         COMPREPLY=( $(compgen -W "$(devz secrets list 2>/dev/null)" -- "$cur") )
       fi

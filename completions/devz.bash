@@ -12,7 +12,7 @@ _devz() {
   case "${COMP_WORDS[1]}" in
     secrets)
       if [ "$COMP_CWORD" -eq 2 ]; then
-        COMPREPLY=( $(compgen -W "unlock status list show edit" -- "$cur") )
+        COMPREPLY=( $(compgen -W "unlock status list show edit env" -- "$cur") )
       elif [ "$prev" = show ] || [ "$prev" = edit ]; then
         COMPREPLY=( $(compgen -W "$(devz secrets list 2>/dev/null)" -- "$cur") )
       fi

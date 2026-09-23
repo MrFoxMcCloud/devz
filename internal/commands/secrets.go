@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/MrFoxMcCloud/devz/internal/cli"
@@ -22,11 +23,18 @@ func Secrets() *cli.Command {
 		Short: "unlock and inspect the local secret store",
 		Usage: `usage: devz secrets <unlock|status|list|show|edit> [entry]
 
+  env [names]   print export lines for the configured entries, for eval
   unlock        warm the gpg-agent cache so tools without a TTY can read secrets
   status        whether the cache is warm, and which entries exist
   list          the entries this machine is expected to hold
   show <entry>  print one secret (delegates to pass)
   edit <entry>  rotate one secret (delegates to pass)
+
+The env subcommand replaces exporting a token from a shell rc file. Instead of
+plaintext on disk and in the environment of every process you start:
+
+    eval "$(devz secrets env)"            # this shell only, from the store
+    eval "$(devz secrets env CRM_API_TOKEN)"
 
 Why unlock exists: processes spawned without a TTY -- MCP servers, editor
 extensions -- cannot show a passphrase prompt, so they fail at startup if the
@@ -52,6 +60,8 @@ func runSecrets(ctx *cli.Context, args []string) error {
 		return unlock(ctx)
 	case "status":
 		return secretsStatus(ctx)
+	case "env":
+		return secretsEnv(ctx, args[1:])
 	case "list":
 		for _, e := range cfg.Secrets.Entries {
 			fmt.Fprintln(ctx.Stdout, e)
@@ -65,6 +75,54 @@ func runSecrets(ctx *cli.Context, args []string) error {
 	default:
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
+}
+
+// secretsEnv prints shell export lines for the configured entry->variable
+// mappings, optionally filtered to the named variables.
+func secretsEnv(ctx *cli.Context, want []string) error {
+	mappings := ctx.Config.Secrets.EnvVars
+	if len(mappings) == 0 {
+		return fmt.Errorf("no secrets.envVars configured in %s", mustConfigPath())
+	}
+
+	wanted := map[string]bool{}
+	for _, name := range want {
+		wanted[name] = true
+	}
+
+	// Sorted so the output is stable and diffable.
+	entries := make([]string, 0, len(mappings))
+	for entry := range mappings {
+		entries = append(entries, entry)
+	}
+	sort.Strings(entries)
+
+	found := 0
+	for _, entry := range entries {
+		name := mappings[entry]
+		if len(wanted) > 0 && !wanted[name] {
+			continue
+		}
+		cmd := exec.Command("pass", "show", entry)
+		cmd.Stderr = ctx.Stderr
+		cmd.Env = passEnv(ctx.Config)
+		out, err := cmd.Output()
+		if err != nil {
+			return fmt.Errorf("reading %s: %w (is the agent cache warm? try 'devz secrets unlock')", entry, err)
+		}
+		value, _, _ := strings.Cut(string(out), "\n")
+		fmt.Fprintf(ctx.Stdout, "export %s=%s\n", name, shellQuote(strings.TrimSpace(value)))
+		found++
+	}
+	if found == 0 {
+		return fmt.Errorf("no configured entry matches %s", strings.Join(want, ", "))
+	}
+	return nil
+}
+
+// shellQuote single-quotes a value safely for eval.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func unlock(ctx *cli.Context) error {

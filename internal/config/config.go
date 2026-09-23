@@ -38,6 +38,11 @@ type Secrets struct {
 	UnlockEntry string `json:"unlockEntry"`
 	// GPGKey is the key id the store is encrypted to, checked by doctor.
 	GPGKey string `json:"gpgKey"`
+	// EnvVars maps an entry to the environment variable it populates, for
+	// `devz secrets env`. This is what replaces exporting a token from a
+	// shell rc file: the value is fetched on demand instead of sitting in
+	// plaintext on disk and in every process's environment.
+	EnvVars map[string]string `json:"envVars"`
 }
 
 // Claude configures the two-account Claude Code setup. Disabled by default:
