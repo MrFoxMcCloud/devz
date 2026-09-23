@@ -203,3 +203,7 @@ fixes from there. Tag v2 work as prereleases (`v2.0.0-alpha.1`), which
 
 Zero third-party dependencies, deliberately — it builds offline and instantly,
 and a tool people are told to install should not be a supply-chain question.
+
+## License
+
+[MIT](LICENSE)
