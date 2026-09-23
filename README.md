@@ -99,6 +99,7 @@ Every check that applies to this machine, with the fix for anything off.
 | `pass:entries` | configured secrets missing from the store (checked on disk, so doctor never triggers a prompt of its own) |
 | `pass:backup` | a store with no git remote: one copy, one disk |
 | `gh:auth` | which GitHub account is actually active |
+| `devz:build` | a work-in-progress devz installed on PATH instead of a release |
 
 ### `devz secrets`
 
@@ -155,18 +156,29 @@ at completion time.
 ## Development
 
 ```sh
-make build                  # ./devz, version stamped from git describe
-make run ARGS="doctor"      # build and run the dev binary from the repo
+make build           # ./devz, version stamped from git describe
+make install         # install the working tree as the devz on PATH
 make vet test fmt
-make completions            # regenerate the checked-in completion scripts
+make completions     # regenerate the checked-in completion scripts
 goreleaser release --snapshot --clean    # dry-run a release
 ```
 
-The installed `devz` is always a release; the one you are working on is
-`./devz` in the repo. `make install` refuses anything but a clean checkout of a
-release tag, so a work-in-progress build never becomes the devz your shell and
-scripts call. If a change touches the config format, point the dev build at its
-own file: `DEVZ_CONFIG=./dev-config.json ./devz doctor`.
+Testing a change usually means running it as `devz`: `account` is per-repo,
+plugins come from PATH, and completion calls `devz` by name. So `make install`
+replaces the installed devz with your working tree, and one command puts the
+release back:
+
+```sh
+make install                                   # try the work in progress
+go install github.com/MrFoxMcCloud/devz@v1     # back to the latest release
+devz version                                   # "..., dev build" if it is not a release
+```
+
+`devz doctor` warns (`devz:build`) while a dev build is installed, so one does
+not linger unnoticed. To keep both, install the work in progress under another
+name: `make install BIN=devz2`. Not `devz-something`: that would be picked up
+as a plugin. If a change touches the config format, give the dev build its own
+file with `DEVZ_CONFIG=./dev-config.json`.
 
 ### Versioning
 

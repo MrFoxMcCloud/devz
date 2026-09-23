@@ -2,27 +2,22 @@ BIN     := devz
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build run install test vet fmt clean completions
+.PHONY: build install test vet fmt clean completions
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BIN) .
 
-# Dev builds run from the repo and never land on PATH, so the installed devz
-# stays a release while the next version is in progress:
-#   make run ARGS="doctor --quiet"
-run: build
-	./$(BIN) $(ARGS)
+# Installs the working tree to GOBIN, or $(go env GOPATH)/bin, replacing the
+# devz on PATH. Return to a release with
+#   go install github.com/MrFoxMcCloud/devz@v1
+# or keep both: `make install BIN=devz2` installs the work in progress beside
+# it. `devz version` says which one you are running.
+GOBIN_DIR := $(or $(shell go env GOBIN),$(shell go env GOPATH)/bin)
 
-# Installs to GOBIN, or $(go env GOPATH)/bin. Make sure that is on your PATH.
-# Only from a clean checkout of a release tag: installing a working tree is how
-# an unreleased build ends up as the devz everything else calls. Equivalent to
-#   go install github.com/MrFoxMcCloud/devz@vX.Y.Z
 install:
-	@git describe --tags --exact-match >/dev/null 2>&1 || { \
-		echo "make install: HEAD is not a release tag; check out a vX.Y.Z tag, or use 'make run' for dev builds" >&2; exit 1; }
-	@test -z "$$(git status --porcelain)" || { \
-		echo "make install: working tree has uncommitted changes" >&2; exit 1; }
-	go install -ldflags "$(LDFLAGS)" .
+	@case "$(BIN)" in devz-*) \
+		echo "make install: $(BIN) would be picked up as a devz plugin; pick a name without the devz- prefix" >&2; exit 1;; esac
+	go build -ldflags "$(LDFLAGS)" -o "$(GOBIN_DIR)/$(BIN)" .
 
 test:
 	go test ./...
