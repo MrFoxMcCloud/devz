@@ -1,7 +1,7 @@
 # goreleaser build/release config.
 #
 #   local check:  goreleaser release --snapshot --clean
-#   real release: git tag v0.1.0 && git push --tags   (CI does the rest)
+#   real release: git tag vX.Y.Z && git push origin vX.Y.Z   (CI does the rest)
 version: 2
 
 project_name: devz

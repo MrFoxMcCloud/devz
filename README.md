@@ -26,8 +26,12 @@ commands:
 ## Install
 
 ```sh
-go install github.com/MrFoxMcCloud/devz@latest     # needs $(go env GOPATH)/bin on PATH
+go install github.com/MrFoxMcCloud/devz@v1     # needs $(go env GOPATH)/bin on PATH
 ```
+
+`@v1` means "the newest 1.x.y". Pin tighter with `@v1.2` (newest 1.2.x) or
+`@v1.2.3`. `@latest` also stays on v1: a v2 would live at a different module
+path (`.../devz/v2`), so no install jumps a major version by accident.
 
 or grab a binary from [releases](https://github.com/MrFoxMcCloud/devz/releases),
 or build from source with `make build`.
@@ -151,14 +155,39 @@ at completion time.
 ## Development
 
 ```sh
-make build           # ./devz, version stamped from git describe
+make build                  # ./devz, version stamped from git describe
+make run ARGS="doctor"      # build and run the dev binary from the repo
 make vet test fmt
-make completions     # regenerate the checked-in completion scripts
+make completions            # regenerate the checked-in completion scripts
 goreleaser release --snapshot --clean    # dry-run a release
 ```
 
-Release: `git tag v0.1.0 && git push --tags`. CI runs goreleaser and publishes
-linux/darwin × amd64/arm64 archives.
+The installed `devz` is always a release; the one you are working on is
+`./devz` in the repo. `make install` refuses anything but a clean checkout of a
+release tag, so a work-in-progress build never becomes the devz your shell and
+scripts call. If a change touches the config format, point the dev build at its
+own file: `DEVZ_CONFIG=./dev-config.json ./devz doctor`.
+
+### Versioning
+
+[Semantic versioning](https://semver.org). For a CLI, the compatibility surface
+is the commands, flags, exit codes, config format and any output that scripts
+parse:
+
+| bump | when | example |
+|---|---|---|
+| major | something that works today stops working | removing a command or flag, a config change that makes existing files fail to load |
+| minor | something new, old usage unaffected | a new subcommand, doctor check or optional config field |
+| patch | fixes | a wrong fix hint, a doc correction |
+
+Release: `git tag v1.2.3 && git push origin v1.2.3`. CI runs goreleaser and
+publishes linux/darwin × amd64/arm64 archives.
+
+A major version needs more than a tag. Go requires the module path to end in
+`/v2` (in `go.mod` and every internal import) before `v2.x.y` tags install.
+While v2 is in progress, cut `release/v1` from the last v1 tag and ship v1
+fixes from there. Tag v2 work as prereleases (`v2.0.0-alpha.1`), which
+`@latest` ignores.
 
 Zero third-party dependencies, deliberately — it builds offline and instantly,
 and a tool people are told to install should not be a supply-chain question.
