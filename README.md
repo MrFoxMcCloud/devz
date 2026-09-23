@@ -65,7 +65,8 @@ build serve everyone without a fork per person.
     "store": "~/.password-store",
     "entries": ["team/api-token"],
     "unlockEntry": "team/api-token",
-    "gpgKey": "..."
+    "gpgKey": "...",
+    "envVars": { "team/api-token": "TEAM_API_TOKEN" }
   },
   "claude": { "enabled": false, "sharedDir": "~/.claude-shared" },
   "doctor": { "requiredTools": ["git", "gh", "uv"], "skip": [] }
@@ -98,11 +99,21 @@ Every check that applies to this machine, with the fix for anything off.
 ### `devz secrets`
 
 ```sh
+devz secrets cached         # exit 0 if the cache is warm, 1 if cold; no output
+devz secrets env [names]    # export lines for secrets.envVars, for eval
 devz secrets unlock         # warm the gpg-agent cache
 devz secrets status         # cache warmth + which entries exist
 devz secrets list           # the entries this machine expects
 devz secrets show <entry>   # delegates to pass
 devz secrets edit <entry>   # rotate; delegates to pass
+```
+
+`env` replaces exporting tokens from a shell rc file. `secrets.envVars` maps a
+store entry to the variable it fills, and the value is read from the store each
+time instead of sitting in plaintext on disk:
+
+```sh
+devz secrets cached && eval "$(devz secrets env)"   # skip quietly on a cold cache
 ```
 
 `unlock` exists because processes spawned **without a TTY** — MCP servers,
