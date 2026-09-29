@@ -18,6 +18,15 @@ _devz() {
       fi
       ;;
     config)     COMPREPLY=( $(compgen -W "show path init edit" -- "$cur") ) ;;
+    memory)
+      if [ "$COMP_CWORD" -eq 2 ]; then
+        COMPREPLY=( $(compgen -W "status init" -- "$cur") )
+      elif [ "${COMP_WORDS[2]}" = init ] && [[ "$cur" == -* ]]; then
+        COMPREPLY=( $(compgen -W "--all --dry-run" -- "$cur") )
+      else
+        COMPREPLY=( $(compgen -d -- "$cur") )
+      fi
+      ;;
     completion) COMPREPLY=( $(compgen -W "zsh bash" -- "$cur") ) ;;
     doctor)     COMPREPLY=( $(compgen -W "--quiet" -- "$cur") ) ;;
     help)       COMPREPLY=( $(compgen -W "$(devz completion --commands 2>/dev/null)" -- "$cur") ) ;;

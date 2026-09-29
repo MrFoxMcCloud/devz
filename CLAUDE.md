@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 devz is a single Go binary that dispatches local dev-environment commands
-(`doctor`, `secrets`, `account`, `config`, `completion`, `version`), plus any
+(`doctor`, `secrets`, `account`, `memory`, `config`, `completion`, `version`), plus any
 `devz-<name>` executable on PATH as a plugin. See README.md for user-facing docs.
 
 ## Workflow rules
@@ -63,6 +63,9 @@ Run `make fmt vet test build` before calling a change done.
   match.
 - When you add a subcommand or config field, also update the command's `Usage`
   text and README.md.
+- `memory` tests build real git repos in `t.TempDir()`. They set `HOME`,
+  `XDG_CONFIG_HOME` and `GIT_CONFIG_GLOBAL` there (see `memoryEnv`) so they
+  never touch the real global git ignore or `~/.claude-shared`.
 - Tests use only the standard `testing` package. Point `DEVZ_CONFIG` at
   `t.TempDir()` so a test never reads the real config. Tests must not call
   out to `pass` or `gpg`.

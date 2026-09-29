@@ -50,6 +50,31 @@ type Secrets struct {
 type Claude struct {
 	Enabled   bool   `json:"enabled"`
 	SharedDir string `json:"sharedDir"`
+	Memory    Memory `json:"memory"`
+}
+
+// Memory configures `devz memory`: Claude Code memory and plans shared by
+// every checkout and every account, split into company, org and repo layers.
+// Nothing is managed until Hosts names a forge.
+type Memory struct {
+	// Store holds the layers as <store>/<host>/<org>/... Empty means
+	// <sharedDir>/orgs, which every account on the machine already shares.
+	Store string `json:"store,omitempty"`
+	// Hosts are the git hosts whose repos get layered memory, matched against
+	// each repo's origin URL (e.g. "git.example.com"). Repos anywhere else
+	// keep Claude Code's default per-checkout memory.
+	Hosts []string `json:"hosts"`
+	// Roots are the directories `devz memory init --all` searches for
+	// checkouts, up to three levels deep (<root>/<org>/<repo>).
+	Roots []string `json:"roots"`
+}
+
+// StoreDir is the expanded memory store directory.
+func (c Claude) StoreDir() string {
+	if c.Memory.Store != "" {
+		return Expand(c.Memory.Store)
+	}
+	return filepath.Join(Expand(c.SharedDir), "orgs")
 }
 
 // Doctor tunes the environment checks.

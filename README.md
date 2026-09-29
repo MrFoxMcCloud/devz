@@ -72,7 +72,14 @@ build serve everyone without a fork per person.
     "gpgKey": "...",
     "envVars": { "team/api-token": "TEAM_API_TOKEN" }
   },
-  "claude": { "enabled": false, "sharedDir": "~/.claude-shared" },
+  "claude": {
+    "enabled": false,
+    "sharedDir": "~/.claude-shared",
+    "memory": {
+      "hosts": ["git.example.com"],
+      "roots": ["~/src/work"]
+    }
+  },
   "doctor": { "requiredTools": ["git", "gh", "uv"], "skip": [] }
 }
 ```
@@ -98,6 +105,7 @@ Every check that applies to this machine, with the fix for anything off.
 | `gpg:cache` | a cold agent cache, which surfaces as unrelated-looking startup failures in tools that have no TTY |
 | `pass:entries` | configured secrets missing from the store (checked on disk, so doctor never triggers a prompt of its own) |
 | `pass:backup` | a store with no git remote: one copy, one disk |
+| `claude:memory` | a repo on a `claude.memory.hosts` forge whose Claude memory is not shared yet |
 | `gh:auth` | which GitHub account is actually active |
 | `devz:build` | a work-in-progress devz installed on PATH instead of a release |
 
@@ -149,6 +157,45 @@ a cold cache. Warming it once from a terminal is the fix.
 Passthrough to `claude-account`, which owns the per-repo `.claude-account`
 marker. Not reimplemented — two implementations of one rule is how they drift.
 Needs `claude.enabled` in the config.
+
+### `devz memory`
+
+```sh
+devz memory [status] [DIR]           # which layers this repo loads, and whether it is set up
+devz memory init [DIR]               # set up the repo containing DIR (default: here)
+devz memory init --all [--dry-run]   # every checkout under claude.memory.roots
+```
+
+Claude Code keys auto memory on the config dir *and* the checkout path, so two
+accounts and three clones of one repo make six separate memories. `devz memory`
+keys it on the repo's origin URL instead, and adds two shared layers above it:
+
+```
+<store>/<host>/CLAUDE.md, memory/           company: every repo on the host
+<store>/<host>/<org>/CLAUDE.md, memory/     org: every repo in the org
+<store>/<host>/<org>/plans/                 plans, outside every repo
+<store>/<host>/<org>/repos/<repo>/memory/   repo: that repo's auto memory
+```
+
+`<store>` is `claude.memory.store`, by default `<claude.sharedDir>/orgs`.
+
+For one repo, `init`:
+
+- writes `autoMemoryDirectory`, `plansDirectory` and permission to edit the
+  store into the checkout's `.claude/settings.local.json`, keeping anything
+  else there, and adds that file to your global git ignore;
+- links the org's `CLAUDE.md` and `plans/` into the directory above the repo,
+  when the checkout sits at `<root>/<org>/<repo>`. Claude Code loads a parent
+  directory's `CLAUDE.md`, and the org one imports the org and company memory
+  indexes. So in `infra` you get company + org + infra memory, and never
+  `backend`'s;
+- creates missing store files from templates. A hand-written org `CLAUDE.md`
+  already in the org folder is moved into the store and linked back.
+
+Only repos whose origin host is in `claude.memory.hosts` are touched. `init`
+never overwrites a file it did not create, never links into a search root
+itself, and is safe to rerun. Restart Claude sessions afterwards: settings are
+read at startup.
 
 ## Plugins
 

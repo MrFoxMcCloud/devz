@@ -270,7 +270,8 @@ func checkClaude(cfg config.Config) []result {
 	if email == "" {
 		email = "(default account)"
 	}
-	return append(out, ok("claude:account", email))
+	out = append(out, ok("claude:account", email))
+	return append(out, checkMemory(cfg, cwd))
 }
 
 func checkGH() result {
