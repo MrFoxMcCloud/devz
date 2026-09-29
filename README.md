@@ -223,28 +223,29 @@ at completion time.
 
 ```sh
 make build           # ./devz, version stamped from git describe
-make install         # install the working tree as the devz on PATH
+make install         # the working tree as ./devz; the devz on PATH is untouched
 make vet test fmt
 make completions     # regenerate the checked-in completion scripts
 goreleaser release --snapshot --clean    # dry-run a release
 ```
 
-Testing a change usually means running it as `devz`: `account` is per-repo,
-plugins come from PATH, and completion calls `devz` by name. So `make install`
-replaces the installed devz with your working tree, and one command puts the
-release back:
+`make install` puts the working tree at `./devz` in the checkout and never
+touches the devz on PATH. That one is the release, and launchers such as the
+MCP server wrappers call it, so work in progress must not replace it. Try a
+change by path:
 
 ```sh
-make install                                   # try the work in progress
-go install github.com/MrFoxMcCloud/devz@v1     # back to the latest release
-devz version                                   # "..., dev build" if it is not a release
+make install
+./devz version                                  # "..., dev build"
+~/src/devz/devz memory                          # from another repo, where per-repo commands look
 ```
 
-`devz doctor` warns (`devz:build`) while a dev build is installed, so one does
-not linger unnoticed. To keep both, install the work in progress under another
-name: `make install BIN=devz2`. Not `devz-something`: that would be picked up
-as a plugin. If a change touches the config format, give the dev build its own
-file with `DEVZ_CONFIG=./dev-config.json`.
+Completion calls `devz` by name, so it keeps completing the release until a new
+one is tagged and installed with `go install github.com/MrFoxMcCloud/devz@v1`.
+`devz doctor` warns (`devz:build`) when the binary running it is a dev build.
+`make install BIN=devz2` names the output `./devz2`; never `devz-something`,
+which would be picked up as a plugin. If a change touches the config format,
+give the dev build its own file with `DEVZ_CONFIG=./dev-config.json`.
 
 ### Versioning
 
