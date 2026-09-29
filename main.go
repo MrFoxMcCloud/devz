@@ -40,6 +40,7 @@ func main() {
 		commands.Doctor(),
 		commands.Secrets(),
 		commands.Account(),
+		commands.Memory(),
 		commands.Config(),
 		commands.Completion(app),
 		commands.Version(),

@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 devz is a single Go binary that dispatches local dev-environment commands
-(`doctor`, `secrets`, `account`, `config`, `completion`, `version`), plus any
+(`doctor`, `secrets`, `account`, `memory`, `config`, `completion`, `version`), plus any
 `devz-<name>` executable on PATH as a plugin. See README.md for user-facing docs.
 
 ## Workflow rules
@@ -63,14 +63,19 @@ Run `make fmt vet test build` before calling a change done.
   match.
 - When you add a subcommand or config field, also update the command's `Usage`
   text and README.md.
+- `memory` tests build real git repos in `t.TempDir()`. They set `HOME`,
+  `XDG_CONFIG_HOME` and `GIT_CONFIG_GLOBAL` there (see `memoryEnv`) so they
+  never touch the real global git ignore or `~/.claude-shared`.
 - Tests use only the standard `testing` package. Point `DEVZ_CONFIG` at
   `t.TempDir()` so a test never reads the real config. Tests must not call
   out to `pass` or `gpg`.
 - Releases: push a `vX.Y.Z` tag, and goreleaser builds linux/darwin ×
   amd64/arm64 in CI. Semver rules are in README.md under Versioning. A breaking
   change to commands, flags, exit codes or the config format is a major bump.
-- Install dev builds only through `make install` (or `make install BIN=devz2`
-  to keep the release alongside). Never `cp` a binary onto PATH. `devz doctor`'s
+- `make install` builds the working tree to `./devz` in the checkout, never
+  onto PATH: the devz on PATH is the release that MCP launchers call. Run dev
+  builds as `./devz` or by full path. Never `cp` or `go build -o` a binary onto
+  PATH; releases get there only through `go install ...@v1`. `devz doctor`'s
   `devz:build` check and `devz version` flag a dev build; `isRelease` in
   `version.go` decides, and its tests list the version shapes it must reject.
   Never name a dev binary `devz-*`: that makes it a plugin.

@@ -98,9 +98,9 @@ func runDoctor(ctx *cli.Context, args []string) error {
 	return nil
 }
 
-// checkBuild flags a work-in-progress devz on PATH. Installing one to test it
-// is normal; forgetting it is there is how a stale, unreleased build ends up
-// answering every call for weeks.
+// checkBuild flags that the running devz is a work-in-progress build.
+// `make install` keeps those in the checkout; one that reaches PATH anyway is
+// how a stale, unreleased build ends up answering every call for weeks.
 func checkBuild(version string) result {
 	if isRelease(version) {
 		return ok("devz:build", "release "+version)
@@ -270,7 +270,8 @@ func checkClaude(cfg config.Config) []result {
 	if email == "" {
 		email = "(default account)"
 	}
-	return append(out, ok("claude:account", email))
+	out = append(out, ok("claude:account", email))
+	return append(out, checkMemory(cfg, cwd))
 }
 
 func checkGH() result {
