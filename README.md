@@ -119,8 +119,11 @@ devz secrets unlock         # warm the gpg-agent cache
 devz secrets status         # cache warmth + which entries exist
 devz secrets list           # the entries this machine expects
 devz secrets show <entry>   # delegates to pass
-devz secrets edit <entry>   # rotate; delegates to pass
+devz secrets rotate <entry> # change the value; delegates to pass edit
 devz secrets add <entry> [--env NAME]  # pass insert, then record it in the config
+devz secrets map            # which variable each entry is exported as
+devz secrets map <entry> NAME      # set or change that variable
+devz secrets map <entry> --clear   # stop exporting the entry
 ```
 
 `env` replaces exporting tokens from a shell rc file. `secrets.envVars` maps a
@@ -145,8 +148,19 @@ exec devz secrets exec CRM_API_TOKEN -- uvx dasnuve-crm
 `secrets.entries`, so `status` and `doctor` start tracking it. With
 `--env NAME` it also maps the entry to `NAME` in `secrets.envVars`, so the next
 `devz secrets env` exports it. `add` refuses an entry already in the store
-(change that with `edit`). Pipe the value in to skip the prompt:
+(change its value with `rotate`). Pipe the value in to skip the prompt:
 `echo "$TOKEN" | devz secrets add team/api-token --env TEAM_API_TOKEN`.
+
+`map` is for the secret that is already stored but exported under the wrong
+name, or not at all, such as one added without `--env`. It changes only
+`secrets.envVars` in the config: the secret is not read, so it works on a cold
+cache. It refuses an entry the store does not hold, and a variable name another
+entry already uses. An entry put there with plain `pass insert` is added to
+`secrets.entries` as well. With no arguments it lists every entry and its
+variable.
+
+`rotate` changes a secret's value. `edit` is the older name for it and still
+works.
 
 `unlock` exists because processes spawned **without a TTY** — MCP servers,
 editor extensions — cannot show a passphrase prompt, so they fail at startup on
