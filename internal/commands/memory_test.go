@@ -52,9 +52,25 @@ func TestMergeMemorySettingsKeepsOtherKeys(t *testing.T) {
 	if got["autoMemoryDirectory"] != "/s/git.example.com/acme/repos/backend/memory" {
 		t.Errorf("autoMemoryDirectory = %v", got["autoMemoryDirectory"])
 	}
-	allow := got["permissions"].(map[string]any)["allow"].([]any)
-	if len(allow) != 2 || allow[0] != "Bash(ls)" || allow[1] != "Edit(//s/git.example.com/**)" {
+	perms := got["permissions"].(map[string]any)
+	allow := perms["allow"].([]any)
+	if len(allow) != 3 || allow[0] != "Bash(ls)" ||
+		allow[1] != "Edit(//s/git.example.com/acme/repos/backend/memory/**)" ||
+		allow[2] != "Edit(//s/git.example.com/acme/plans/**)" {
 		t.Errorf("allow = %v", allow)
+	}
+	ask := perms["ask"].([]any)
+	wantAsk := []any{
+		"Edit(//s/git.example.com/memory/**)", "Edit(//s/git.example.com/CLAUDE.md)",
+		"Edit(//s/git.example.com/*/memory/**)", "Edit(//s/git.example.com/*/CLAUDE.md)",
+	}
+	if len(ask) != len(wantAsk) {
+		t.Fatalf("ask = %v", ask)
+	}
+	for i := range wantAsk {
+		if ask[i] != wantAsk[i] {
+			t.Errorf("ask[%d] = %v, want %v", i, ask[i], wantAsk[i])
+		}
 	}
 
 	if _, changed, err := mergeMemorySettings(out, l); err != nil || changed {
@@ -148,8 +164,14 @@ func TestMemoryInitLaysOutStoreAndIsIdempotent(t *testing.T) {
 	if st, _ := exec.Command("git", "-C", top, "status", "--porcelain").Output(); len(st) != 0 {
 		t.Errorf("init left the repo dirty:\n%s", st)
 	}
-	if r := checkMemory(cfg, top); r.status != statusOK {
-		t.Errorf("doctor after init: %+v", r)
+	results := checkMemory(cfg, top)
+	if len(results) != 3 {
+		t.Errorf("doctor after init: %d results, want memory, guard and rule", len(results))
+	}
+	for _, r := range results {
+		if r.status != statusOK {
+			t.Errorf("doctor after init: %+v", r)
+		}
 	}
 
 	out.Reset()
@@ -174,8 +196,8 @@ func TestMemoryInitDryRunWritesNothing(t *testing.T) {
 	if !strings.Contains(out.String(), "would update") {
 		t.Errorf("dry run output:\n%s", out.String())
 	}
-	if r := checkMemory(cfg, top); r.status != statusWarn {
-		t.Errorf("doctor before init: %+v", r)
+	if rs := checkMemory(cfg, top); len(rs) != 1 || rs[0].status != statusWarn || rs[0].id != "claude:memory" {
+		t.Errorf("doctor before init: %+v", rs)
 	}
 }
 
@@ -265,5 +287,166 @@ func TestMemoryAdoptsOverAnUntouchedSeed(t *testing.T) {
 	}
 	if got2, _ := os.ReadFile(filepath.Join(store, "CLAUDE.md")); string(got2) != string(got) {
 		t.Error("an edited store CLAUDE.md was overwritten")
+	}
+}
+
+// The rule earlier versions wrote let Claude edit the whole host directory.
+// It is what the guard exists to replace, so a rerun has to take it out.
+func TestMergeMemorySettingsReplacesTheBroadAllow(t *testing.T) {
+	l := memoryLayout{Repo: "backend", HostDir: "/s/git.example.com", OrgDir: "/s/git.example.com/acme"}
+	in := []byte(`{"autoMemoryDirectory":"/s/git.example.com/acme/repos/backend/memory",
+		"plansDirectory":"/s/git.example.com/acme/plans",
+		"permissions":{"additionalDirectories":["/s/git.example.com"],
+		"allow":["Bash(ls)","Edit(//s/git.example.com/**)"]}}`)
+
+	out, changed, err := mergeMemorySettings(in, l)
+	if err != nil || !changed {
+		t.Fatalf("merge: changed=%v err=%v", changed, err)
+	}
+	if strings.Contains(string(out), `"Edit(//s/git.example.com/**)"`) {
+		t.Errorf("the broad allow survived:\n%s", out)
+	}
+	if !strings.Contains(string(out), `"Bash(ls)"`) {
+		t.Errorf("an unrelated allow rule was dropped:\n%s", out)
+	}
+	if _, changed, err := mergeMemorySettings(out, l); err != nil || changed {
+		t.Errorf("second merge should be a no-op: changed=%v err=%v", changed, err)
+	}
+}
+
+func TestMemorySettingsState(t *testing.T) {
+	_, top, cfg := memoryEnv(t)
+	l, err := resolveMemoryRepo(cfg, top)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(l.settingsPath()), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(l.settingsPath(), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if shared, guarded := memorySettingsState(l); shared || guarded {
+		t.Errorf("no settings file: shared=%v guarded=%v", shared, guarded)
+	}
+
+	// What devz wrote before the guard: shared, and wide open.
+	g := l.guard()
+	old, _ := json.Marshal(map[string]any{
+		"autoMemoryDirectory": l.repoMemory(), "plansDirectory": l.plans(),
+		"permissions": map[string]any{"allow": []string{g.legacy}},
+	})
+	write(string(old))
+	if shared, guarded := memorySettingsState(l); !shared || guarded {
+		t.Errorf("pre-guard settings: shared=%v guarded=%v, want shared and unguarded", shared, guarded)
+	}
+
+	merged, _, err := mergeMemorySettings(old, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(string(merged))
+	if shared, guarded := memorySettingsState(l); !shared || !guarded {
+		t.Errorf("after merge: shared=%v guarded=%v", shared, guarded)
+	}
+}
+
+// gitCommit gives a test repo its first commit, which a worktree needs.
+func gitCommit(t *testing.T, top string) {
+	t.Helper()
+	cmd := exec.Command("git", "-C", top, "-c", "user.name=t", "-c", "user.email=t@example.com",
+		"commit", "-q", "--allow-empty", "-m", "init")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+}
+
+// Claude Code reads the main checkout's settings in every linked worktree, so
+// that is where devz looks and writes, wherever it is run from.
+func TestMemoryInALinkedWorktreeUsesTheMainCheckout(t *testing.T) {
+	home, top, cfg := memoryEnv(t)
+	gitCommit(t, top)
+	sibling := filepath.Join(home, "src", "acme", ".wt-backend-topic")
+	nested := filepath.Join(top, ".claude", "worktrees", "agent-1")
+	for i, wt := range []string{sibling, nested} {
+		branch := "topic-" + string(rune('a'+i))
+		if out, err := exec.Command("git", "-C", top, "worktree", "add", "-q", wt, "-b", branch).CombinedOutput(); err != nil {
+			t.Fatalf("git worktree add: %v\n%s", err, out)
+		}
+	}
+
+	var out bytes.Buffer
+	ctx := &cli.Context{Config: cfg, Stdout: &out, Stderr: &out}
+	for _, wt := range []string{sibling, nested} {
+		l, err := resolveMemoryRepo(cfg, wt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if l.Top != top || l.Worktree != wt || l.Repo != "backend" {
+			t.Errorf("from %s: Top=%s Worktree=%s Repo=%s", wt, l.Top, l.Worktree, l.Repo)
+		}
+		if !l.parentIsOrg() {
+			t.Errorf("from %s: the org links should still be placed beside the main checkout", wt)
+		}
+	}
+
+	// init from inside a worktree sets up the repo, not the worktree.
+	if err := runMemory(ctx, []string{"init", nested}); err != nil {
+		t.Fatalf("init: %v\n%s", err, out.String())
+	}
+	if !exists(filepath.Join(top, ".claude", "settings.local.json")) {
+		t.Error("the main checkout got no settings file")
+	}
+	for _, wt := range []string{sibling, nested} {
+		if exists(filepath.Join(wt, ".claude", "settings.local.json")) {
+			t.Errorf("a settings file was written into the worktree %s", wt)
+		}
+		for _, r := range checkMemory(cfg, wt) {
+			if r.status != statusOK {
+				t.Errorf("doctor in %s: %+v", wt, r)
+			}
+		}
+	}
+
+	out.Reset()
+	if err := runMemory(ctx, []string{"status", sibling}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); strings.Contains(got, "NOT") || !strings.Contains(got, "linked worktree") {
+		t.Errorf("status from a worktree:\n%s", got)
+	}
+}
+
+func TestMemoryInitAppendsTheBranchRuleOnce(t *testing.T) {
+	home, top, cfg := memoryEnv(t)
+	hostClaude := filepath.Join(home, "shared", "orgs", "git.example.com", "CLAUDE.md")
+	if err := os.MkdirAll(filepath.Dir(hostClaude), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A host file from before the rule existed, edited by hand since.
+	if err := os.WriteFile(hostClaude, []byte("# git.example.com\n\nOur own notes."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	ctx := &cli.Context{Config: cfg, Stdout: &out, Stderr: &out}
+	for range 2 {
+		if err := runMemory(ctx, []string{"init", top}); err != nil {
+			t.Fatalf("init: %v\n%s", err, out.String())
+		}
+	}
+	body, _ := os.ReadFile(hostClaude)
+	if !strings.HasPrefix(string(body), "# git.example.com\n\nOur own notes.\n\n## What not to save") {
+		t.Errorf("the existing text was not kept ahead of the rule:\n%s", body)
+	}
+	if n := strings.Count(string(body), branchRuleMarker); n != 1 {
+		t.Errorf("the rule is in the file %d times, want 1", n)
+	}
+	if n := strings.Count(out.String(), "append the branch rule"); n != 1 {
+		t.Errorf("init reported the append %d times, want 1:\n%s", n, out.String())
 	}
 }

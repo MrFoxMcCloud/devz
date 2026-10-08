@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/MrFoxMcCloud/devz/internal/cli"
@@ -18,12 +19,14 @@ func Doctor() *cli.Command {
 	return &cli.Command{
 		Name:  "doctor",
 		Short: "check this machine's development environment",
-		Usage: `usage: devz doctor [--quiet]
+		Usage: `usage: devz doctor [--quiet] [--all]
 
 Runs every check that applies to this machine and prints a fix for anything
 that is off. Exits non-zero if any check fails, so it is usable in a script.
 
   --quiet    print only problems
+  --all      also check every checkout under claude.memory.roots, and the
+             Claude account of each of their linked worktrees
 
 Checks are skipped per-machine via "doctor.skip" in the config, which is how a
 teammate on a different OS turns off what does not apply to them. See
@@ -33,11 +36,13 @@ teammate on a different OS turns off what does not apply to them. See
 }
 
 func runDoctor(ctx *cli.Context, args []string) error {
-	quiet := false
+	quiet, all := false, false
 	for _, a := range args {
 		switch a {
 		case "--quiet", "-q":
 			quiet = true
+		case "--all":
+			all = true
 		default:
 			return fmt.Errorf("unknown flag %q", a)
 		}
@@ -49,6 +54,13 @@ func runDoctor(ctx *cli.Context, args []string) error {
 		for _, r := range rs {
 			if cfg.Doctor.Skipped(r.id) {
 				r = skip(r.id, "skipped by config")
+			}
+			// --all can reach a finding the checks for this directory already
+			// made, such as the one host file every repo shares.
+			if slices.ContainsFunc(results, func(seen result) bool {
+				return seen.id == r.id && seen.detail == r.detail
+			}) {
+				continue
 			}
 			results = append(results, r)
 		}
@@ -64,6 +76,9 @@ func runDoctor(ctx *cli.Context, args []string) error {
 	}
 	if cfg.Claude.Enabled {
 		add(checkClaude(cfg)...)
+		if all {
+			add(checkAllCheckouts(cfg)...)
+		}
 	}
 	add(checkGH())
 	add(checkCompletion()...)
@@ -255,6 +270,14 @@ func checkClaude(cfg config.Config) []result {
 			"disable with claude.enabled=false if this machine has no Claude setup")}
 	}
 	out = append(out, ok("claude:shared", shared))
+	out = append(out, checkGitBackup("claude:shared-backup", shared))
+	store := cfg.Claude.StoreDir()
+	for _, host := range cfg.Claude.Memory.Hosts {
+		if dir := filepath.Join(store, host); exists(dir) {
+			// The store may be one repo, or one per host directory.
+			out = append(out, checkGitBackup("claude:memory-backup", dir, store))
+		}
+	}
 
 	resolve := filepath.Join(shared, "bin", "claude-account-resolve")
 	if !exists(resolve) {
@@ -272,7 +295,112 @@ func checkClaude(cfg config.Config) []result {
 		email = "(default account)"
 	}
 	out = append(out, ok("claude:account", email))
-	return append(out, checkMemory(cfg, cwd))
+	return append(out, checkMemory(cfg, cwd)...)
+}
+
+// checkGitBackup reports whether dir is backed up: a git repo of its own (or
+// inside one of parents) with a remote and nothing uncommitted or unpushed.
+// It runs no network command, so "pushed" is measured against the upstream as
+// last fetched.
+func checkGitBackup(id, dir string, parents ...string) result {
+	at := tildePath(dir)
+	top, err := output("git", "-C", dir, "rev-parse", "--show-toplevel")
+	owned := err == nil && samePath(top, dir)
+	for _, parent := range parents {
+		owned = owned || (err == nil && samePath(top, parent))
+	}
+	if !owned {
+		// A repo further up that ignores this directory backs up nothing.
+		return warn(id, at+" is not a git repo: one copy, one disk",
+			"git -C "+at+" init, then add a private remote")
+	}
+	if remotes, _ := output("git", "-C", top, "remote"); remotes == "" {
+		return warn(id, at+" has no remote: one copy, one disk",
+			"git -C "+at+" remote add origin <private remote>")
+	}
+	if dirty, _ := output("git", "-C", top, "status", "--porcelain"); dirty != "" {
+		return warn(id, fmt.Sprintf("%s has %d uncommitted change(s)", at, len(strings.Split(dirty, "\n"))),
+			"git -C "+at+" add -A && git -C "+at+" commit")
+	}
+	ahead, err := output("git", "-C", top, "rev-list", "--count", "@{upstream}..HEAD")
+	if err != nil {
+		return warn(id, at+" is on a branch with no upstream", "git -C "+at+" push -u origin HEAD")
+	}
+	if ahead != "0" {
+		return warn(id, fmt.Sprintf("%s has %s commit(s) not pushed", at, ahead), "git -C "+at+" push")
+	}
+	return ok(id, at+": committed and pushed")
+}
+
+// samePath compares two paths after resolving symlinks.
+func samePath(a, b string) bool {
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && ra == rb
+}
+
+// checkAllCheckouts runs the per-repo checks over every checkout under
+// claude.memory.roots, and resolves the account of each of their working
+// trees. It prints one line per problem, or one summary line when there is
+// none: a machine with thirty checkouts should not print ninety oks.
+func checkAllCheckouts(cfg config.Config) []result {
+	roots := cfg.Claude.Memory.Roots
+	if len(roots) == 0 {
+		return []result{skip("claude:all", "claude.memory.roots not set")}
+	}
+	resolve := filepath.Join(config.Expand(cfg.Claude.SharedDir), "bin", "claude-account-resolve")
+	canResolve := exists(resolve)
+
+	var out []result
+	checkouts, trees := 0, 0
+	seen, ruleSeen := map[string]bool{}, map[string]bool{}
+	for _, root := range roots {
+		for _, top := range findCheckouts(config.Expand(root), 3) {
+			if main := mainCheckout(top); main != "" {
+				top = main
+			}
+			if seen[top] {
+				continue
+			}
+			seen[top] = true
+			checkouts++
+
+			if l, err := resolveMemoryRepo(cfg, top); err == nil {
+				for _, r := range memoryResults(l) {
+					if r.status != statusWarn && r.status != statusFail {
+						continue
+					}
+					if r.id == "claude:memory-rule" {
+						// One host file serves every repo on the host.
+						if ruleSeen[l.HostDir] {
+							continue
+						}
+						ruleSeen[l.HostDir] = true
+					} else {
+						r.detail = tildePath(top) + ": " + r.detail
+					}
+					r.fix = "devz memory init " + tildePath(top)
+					out = append(out, r)
+				}
+			}
+
+			for _, tree := range worktreesOf(top) {
+				trees++
+				if !canResolve {
+					continue
+				}
+				if _, err := output(resolve, tree); err != nil {
+					out = append(out, warn("claude:account", tildePath(tree)+": marker does not resolve",
+						"cd there, then claude-account --list and claude-account <email>"))
+				}
+			}
+		}
+	}
+	if len(out) == 0 {
+		return []result{ok("claude:all", fmt.Sprintf(
+			"%d checkouts, %d working trees: accounts resolve, memory shared and guarded", checkouts, trees))}
+	}
+	return out
 }
 
 func checkGH() result {

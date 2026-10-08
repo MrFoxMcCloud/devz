@@ -2,9 +2,12 @@ package commands
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/MrFoxMcCloud/devz/internal/cli"
 )
 
 // completionHome points every directory the completion check consults at a
@@ -100,5 +103,108 @@ func TestCandidateFilesKeepsOrderAndDropsRepeats(t *testing.T) {
 	want := []string{"/a/_devz", "/b/_devz"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("candidateFiles = %v, want %v", got, want)
+	}
+}
+
+// gitIn runs git in dir with an identity, failing the test on error.
+func gitIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	full := append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)
+	if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+func TestCheckGitBackup(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", base)
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(base, ".gitconfig"))
+
+	expect := func(dir, want string, status status, parents ...string) {
+		t.Helper()
+		r := checkGitBackup("x:backup", dir, parents...)
+		if r.status != status || !strings.Contains(r.detail, want) {
+			t.Errorf("checkGitBackup(%s) = %+v, want status %d and detail containing %q", dir, r, status, want)
+		}
+	}
+
+	// A directory inside some other repo that ignores it is not backed up,
+	// even though git answers from there.
+	outer := filepath.Join(base, "outer")
+	store := filepath.Join(outer, "store")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, base, "init", "-q", "-b", "main", outer)
+	expect(store, "not a git repo", statusWarn)
+
+	gitIn(t, base, "init", "-q", "-b", "main", store)
+	expect(store, "no remote", statusWarn)
+
+	remote := filepath.Join(base, "remote.git")
+	gitIn(t, base, "init", "-q", "--bare", "-b", "main", remote)
+	gitIn(t, store, "remote", "add", "origin", remote)
+	if err := os.WriteFile(filepath.Join(store, "a.md"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	expect(store, "1 uncommitted", statusWarn)
+
+	gitIn(t, store, "add", "-A")
+	gitIn(t, store, "commit", "-q", "-m", "one")
+	expect(store, "no upstream", statusWarn)
+
+	gitIn(t, store, "push", "-q", "-u", "origin", "main")
+	expect(store, "committed and pushed", statusOK)
+
+	if err := os.WriteFile(filepath.Join(store, "b.md"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, store, "add", "-A")
+	gitIn(t, store, "commit", "-q", "-m", "two")
+	expect(store, "1 commit(s) not pushed", statusWarn)
+	gitIn(t, store, "push", "-q")
+
+	// A host directory inside a store that is one repo counts as backed up by
+	// that repo, when the store is named as an acceptable parent.
+	host := filepath.Join(store, "git.example.com")
+	if err := os.MkdirAll(host, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	expect(host, "not a git repo", statusWarn)
+	expect(host, "committed and pushed", statusOK, store)
+}
+
+func TestCheckAllCheckouts(t *testing.T) {
+	_, top, cfg := memoryEnv(t)
+	gitCommit(t, top)
+	wt := filepath.Join(filepath.Dir(top), "backend-topic")
+	gitIn(t, top, "worktree", "add", "-q", wt, "-b", "topic")
+
+	results := checkAllCheckouts(cfg)
+	if len(results) != 1 || results[0].id != "claude:memory" || results[0].status != statusWarn {
+		t.Fatalf("before init: %+v, want one claude:memory warning", results)
+	}
+	// The worktree sits in the tree, but it is the same repo: one warning,
+	// naming the main checkout, with a fix that can be pasted.
+	if !strings.Contains(results[0].detail, "backend:") || !strings.HasSuffix(results[0].fix, "backend") {
+		t.Errorf("warning = %+v", results[0])
+	}
+
+	ctx := &cli.Context{Config: cfg, Stdout: &strings.Builder{}, Stderr: &strings.Builder{}}
+	if err := runMemory(ctx, []string{"init", "--all"}); err != nil {
+		t.Fatal(err)
+	}
+	results = checkAllCheckouts(cfg)
+	if len(results) != 1 || results[0].id != "claude:all" || results[0].status != statusOK {
+		t.Fatalf("after init: %+v, want one summary line", results)
+	}
+	if !strings.Contains(results[0].detail, "1 checkouts, 2 working trees") {
+		t.Errorf("summary = %q", results[0].detail)
 	}
 }

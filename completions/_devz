@@ -44,7 +44,7 @@ _devz() {
           _values 'shell' zsh bash
           ;;
         doctor)
-          _values 'flag' --quiet
+          _values 'flag' --quiet --all
           ;;
         help)
           _describe -t commands 'devz command' commands
