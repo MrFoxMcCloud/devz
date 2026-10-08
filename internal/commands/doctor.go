@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/MrFoxMcCloud/devz/internal/cli"
@@ -18,12 +19,14 @@ func Doctor() *cli.Command {
 	return &cli.Command{
 		Name:  "doctor",
 		Short: "check this machine's development environment",
-		Usage: `usage: devz doctor [--quiet]
+		Usage: `usage: devz doctor [--quiet] [--all]
 
 Runs every check that applies to this machine and prints a fix for anything
 that is off. Exits non-zero if any check fails, so it is usable in a script.
 
   --quiet    print only problems
+  --all      also check every checkout under claude.memory.roots, and the
+             Claude account of each of their linked worktrees
 
 Checks are skipped per-machine via "doctor.skip" in the config, which is how a
 teammate on a different OS turns off what does not apply to them. See
@@ -33,11 +36,13 @@ teammate on a different OS turns off what does not apply to them. See
 }
 
 func runDoctor(ctx *cli.Context, args []string) error {
-	quiet := false
+	quiet, all := false, false
 	for _, a := range args {
 		switch a {
 		case "--quiet", "-q":
 			quiet = true
+		case "--all":
+			all = true
 		default:
 			return fmt.Errorf("unknown flag %q", a)
 		}
@@ -49,6 +54,13 @@ func runDoctor(ctx *cli.Context, args []string) error {
 		for _, r := range rs {
 			if cfg.Doctor.Skipped(r.id) {
 				r = skip(r.id, "skipped by config")
+			}
+			// --all can reach a finding the checks for this directory already
+			// made, such as the one host file every repo shares.
+			if slices.ContainsFunc(results, func(seen result) bool {
+				return seen.id == r.id && seen.detail == r.detail
+			}) {
+				continue
 			}
 			results = append(results, r)
 		}
@@ -64,8 +76,12 @@ func runDoctor(ctx *cli.Context, args []string) error {
 	}
 	if cfg.Claude.Enabled {
 		add(checkClaude(cfg)...)
+		if all {
+			add(checkAllCheckouts(cfg)...)
+		}
 	}
 	add(checkGH())
+	add(checkCompletion()...)
 	add(checkPlugins())
 
 	width := 0
@@ -254,6 +270,14 @@ func checkClaude(cfg config.Config) []result {
 			"disable with claude.enabled=false if this machine has no Claude setup")}
 	}
 	out = append(out, ok("claude:shared", shared))
+	out = append(out, checkGitBackup("claude:shared-backup", shared))
+	store := cfg.Claude.StoreDir()
+	for _, host := range cfg.Claude.Memory.Hosts {
+		if dir := filepath.Join(store, host); exists(dir) {
+			// The store may be one repo, or one per host directory.
+			out = append(out, checkGitBackup("claude:memory-backup", dir, store))
+		}
+	}
 
 	resolve := filepath.Join(shared, "bin", "claude-account-resolve")
 	if !exists(resolve) {
@@ -271,7 +295,112 @@ func checkClaude(cfg config.Config) []result {
 		email = "(default account)"
 	}
 	out = append(out, ok("claude:account", email))
-	return append(out, checkMemory(cfg, cwd))
+	return append(out, checkMemory(cfg, cwd)...)
+}
+
+// checkGitBackup reports whether dir is backed up: a git repo of its own (or
+// inside one of parents) with a remote and nothing uncommitted or unpushed.
+// It runs no network command, so "pushed" is measured against the upstream as
+// last fetched.
+func checkGitBackup(id, dir string, parents ...string) result {
+	at := tildePath(dir)
+	top, err := output("git", "-C", dir, "rev-parse", "--show-toplevel")
+	owned := err == nil && samePath(top, dir)
+	for _, parent := range parents {
+		owned = owned || (err == nil && samePath(top, parent))
+	}
+	if !owned {
+		// A repo further up that ignores this directory backs up nothing.
+		return warn(id, at+" is not a git repo: one copy, one disk",
+			"git -C "+at+" init, then add a private remote")
+	}
+	if remotes, _ := output("git", "-C", top, "remote"); remotes == "" {
+		return warn(id, at+" has no remote: one copy, one disk",
+			"git -C "+at+" remote add origin <private remote>")
+	}
+	if dirty, _ := output("git", "-C", top, "status", "--porcelain"); dirty != "" {
+		return warn(id, fmt.Sprintf("%s has %d uncommitted change(s)", at, len(strings.Split(dirty, "\n"))),
+			"git -C "+at+" add -A && git -C "+at+" commit")
+	}
+	ahead, err := output("git", "-C", top, "rev-list", "--count", "@{upstream}..HEAD")
+	if err != nil {
+		return warn(id, at+" is on a branch with no upstream", "git -C "+at+" push -u origin HEAD")
+	}
+	if ahead != "0" {
+		return warn(id, fmt.Sprintf("%s has %s commit(s) not pushed", at, ahead), "git -C "+at+" push")
+	}
+	return ok(id, at+": committed and pushed")
+}
+
+// samePath compares two paths after resolving symlinks.
+func samePath(a, b string) bool {
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && ra == rb
+}
+
+// checkAllCheckouts runs the per-repo checks over every checkout under
+// claude.memory.roots, and resolves the account of each of their working
+// trees. It prints one line per problem, or one summary line when there is
+// none: a machine with thirty checkouts should not print ninety oks.
+func checkAllCheckouts(cfg config.Config) []result {
+	roots := cfg.Claude.Memory.Roots
+	if len(roots) == 0 {
+		return []result{skip("claude:all", "claude.memory.roots not set")}
+	}
+	resolve := filepath.Join(config.Expand(cfg.Claude.SharedDir), "bin", "claude-account-resolve")
+	canResolve := exists(resolve)
+
+	var out []result
+	checkouts, trees := 0, 0
+	seen, ruleSeen := map[string]bool{}, map[string]bool{}
+	for _, root := range roots {
+		for _, top := range findCheckouts(config.Expand(root), 3) {
+			if main := mainCheckout(top); main != "" {
+				top = main
+			}
+			if seen[top] {
+				continue
+			}
+			seen[top] = true
+			checkouts++
+
+			if l, err := resolveMemoryRepo(cfg, top); err == nil {
+				for _, r := range memoryResults(l) {
+					if r.status != statusWarn && r.status != statusFail {
+						continue
+					}
+					if r.id == "claude:memory-rule" {
+						// One host file serves every repo on the host.
+						if ruleSeen[l.HostDir] {
+							continue
+						}
+						ruleSeen[l.HostDir] = true
+					} else {
+						r.detail = tildePath(top) + ": " + r.detail
+					}
+					r.fix = "devz memory init " + tildePath(top)
+					out = append(out, r)
+				}
+			}
+
+			for _, tree := range worktreesOf(top) {
+				trees++
+				if !canResolve {
+					continue
+				}
+				if _, err := output(resolve, tree); err != nil {
+					out = append(out, warn("claude:account", tildePath(tree)+": marker does not resolve",
+						"cd there, then claude-account --list and claude-account <email>"))
+				}
+			}
+		}
+	}
+	if len(out) == 0 {
+		return []result{ok("claude:all", fmt.Sprintf(
+			"%d checkouts, %d working trees: accounts resolve, memory shared and guarded", checkouts, trees))}
+	}
+	return out
 }
 
 func checkGH() result {
@@ -298,4 +427,108 @@ func checkPlugins() result {
 		names = append(names, p.Name)
 	}
 	return ok("plugins", strings.Join(names, ", "))
+}
+
+// checkCompletion flags an installed completion script that a different devz
+// wrote. `go install` runs nothing after it installs, so an upgrade cannot
+// refresh the file: the new subcommands exist but do not complete until it is
+// regenerated.
+func checkCompletion() []result {
+	var out []result
+	for _, sh := range []struct {
+		name, script string
+		files        []string
+	}{
+		{"zsh", zshCompletion, zshCompletionFiles()},
+		{"bash", bashCompletion, bashCompletionFiles()},
+	} {
+		if r, found := completionResult(sh.name, sh.script, sh.files); found {
+			out = append(out, r)
+		}
+	}
+	if len(out) == 0 {
+		return []result{skip("completion", "no installed script found; see 'devz help completion'")}
+	}
+	return out
+}
+
+// completionResult compares the first candidate that exists with the script
+// this build emits. Only the first matters: it is the one the shell loads.
+func completionResult(shell, script string, candidates []string) (result, bool) {
+	id := "completion:" + shell
+	for _, path := range candidates {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if string(data) == script {
+			return ok(id, tildePath(path)), true
+		}
+		return warn(id, tildePath(path)+" was written by a different devz version",
+			"devz completion "+shell+" > "+tildePath(path)), true
+	}
+	return result{}, false
+}
+
+// zshCompletionFiles lists where _devz may be installed, in the order zsh
+// would find it: $FPATH when the shell exports it (oh-my-zsh does), then the
+// usual directories for shells that do not.
+func zshCompletionFiles() []string {
+	home, _ := os.UserHomeDir()
+	dirs := filepath.SplitList(os.Getenv("FPATH"))
+	if custom := os.Getenv("ZSH_CUSTOM"); custom != "" {
+		dirs = append(dirs, filepath.Join(custom, "completions"))
+	}
+	if omz := os.Getenv("ZSH"); omz != "" {
+		dirs = append(dirs, filepath.Join(omz, "custom", "completions"), filepath.Join(omz, "completions"))
+	}
+	if home != "" {
+		dirs = append(dirs,
+			filepath.Join(home, ".oh-my-zsh", "custom", "completions"),
+			filepath.Join(home, ".local", "share", "zsh", "site-functions"),
+			filepath.Join(home, ".zsh", "completions"),
+			filepath.Join(home, ".zfunc"))
+	}
+	if brew := os.Getenv("HOMEBREW_PREFIX"); brew != "" {
+		dirs = append(dirs, filepath.Join(brew, "share", "zsh", "site-functions"))
+	}
+	dirs = append(dirs, "/usr/local/share/zsh/site-functions", "/usr/share/zsh/site-functions")
+	return candidateFiles(dirs, "_devz")
+}
+
+// bashCompletionFiles lists where bash-completion looks for a script named
+// after the command.
+func bashCompletionFiles() []string {
+	home, _ := os.UserHomeDir()
+	var dirs []string
+	if user := os.Getenv("BASH_COMPLETION_USER_DIR"); user != "" {
+		dirs = append(dirs, filepath.Join(user, "completions"))
+	}
+	if data := os.Getenv("XDG_DATA_HOME"); data != "" {
+		dirs = append(dirs, filepath.Join(data, "bash-completion", "completions"))
+	}
+	if home != "" {
+		dirs = append(dirs, filepath.Join(home, ".local", "share", "bash-completion", "completions"))
+	}
+	if brew := os.Getenv("HOMEBREW_PREFIX"); brew != "" {
+		dirs = append(dirs, filepath.Join(brew, "etc", "bash_completion.d"))
+	}
+	dirs = append(dirs, "/usr/local/etc/bash_completion.d", "/etc/bash_completion.d",
+		"/usr/share/bash-completion/completions")
+	return candidateFiles(dirs, "devz")
+}
+
+// candidateFiles joins name onto each directory, dropping empty and repeated
+// directories while keeping the order.
+func candidateFiles(dirs []string, name string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, dir := range dirs {
+		if dir == "" || seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		out = append(out, filepath.Join(dir, name))
+	}
+	return out
 }

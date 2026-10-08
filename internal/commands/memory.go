@@ -46,14 +46,20 @@ holds three layers:
 
 init, for one repo:
   - writes .claude/settings.local.json: autoMemoryDirectory (the repo layer),
-    plansDirectory, and permission for Claude to edit the store
+    plansDirectory, and the guard: Claude may edit this repo's memory and the
+    org's plans freely, and is asked before it edits company or org memory
   - links <org>/CLAUDE.md and <org>/plans into the directory above the repo,
     when the checkout sits at <root>/<org>/<repo>. The org CLAUDE.md imports
     the org and company memory indexes, so they load in every repo of the org
     while each repo's own memory stays separate
   - creates missing store files; an existing org-level CLAUDE.md that is not
     yet in the store is moved there and linked back
+  - appends the branch rule to the host CLAUDE.md if it is not there yet
   - adds .claude/settings.local.json to your global git ignore
+
+Linked git worktrees need nothing. Claude Code reads the main checkout's
+.claude/settings.local.json in every worktree of a repo, so they share its
+memory and plans. Run from a worktree, status and init act on the main checkout.
 
 It is safe to run again, and never overwrites a file it did not create.`,
 		Run: runMemory,
@@ -121,8 +127,11 @@ func runMemory(ctx *cli.Context, args []string) error {
 
 // memoryLayout is where one repo's layers live.
 type memoryLayout struct {
+	// Top is the repo's main checkout, where its settings file lives.
 	Top, Host, Org, Repo string
 	HostDir, OrgDir      string
+	// Worktree is the linked worktree the question was asked from, if any.
+	Worktree string
 	// Roots are the configured search roots, expanded.
 	Roots []string
 }
@@ -155,6 +164,13 @@ func resolveMemoryRepo(cfg config.Config, dir string) (memoryLayout, error) {
 	if err != nil || top == "" {
 		return memoryLayout{}, fmt.Errorf("%s is not inside a git repo", dir)
 	}
+	// Claude Code reads the main checkout's .claude/settings.local.json in
+	// every linked worktree of a repo. So the main checkout is where settings
+	// and the org links belong, wherever the question is asked from.
+	worktree := ""
+	if main := mainCheckout(top); main != "" && main != top {
+		worktree, top = top, main
+	}
 	url, err := output("git", "-C", top, "remote", "get-url", "origin")
 	if err != nil || url == "" {
 		return memoryLayout{}, fmt.Errorf("%s: no origin remote: %w", top, errNotManaged)
@@ -170,9 +186,53 @@ func resolveMemoryRepo(cfg config.Config, dir string) (memoryLayout, error) {
 	store := cfg.Claude.StoreDir()
 	return memoryLayout{
 		Top: top, Host: host, Org: org, Repo: repo, Roots: expandedRoots(cfg),
-		HostDir: filepath.Join(store, host),
-		OrgDir:  filepath.Join(store, host, org),
+		Worktree: worktree,
+		HostDir:  filepath.Join(store, host),
+		OrgDir:   filepath.Join(store, host, org),
 	}, nil
+}
+
+// worktreesOf lists every working tree of the repo containing dir, the main
+// checkout first. A bare repository's own directory is left out.
+func worktreesOf(dir string) []string {
+	out, err := output("git", "-C", dir, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil
+	}
+	var trees []string
+	for _, block := range strings.Split(out, "\n\n") {
+		lines := strings.Split(block, "\n")
+		if slices.Contains(lines, "bare") {
+			continue
+		}
+		for _, line := range lines {
+			if path, ok := strings.CutPrefix(line, "worktree "); ok {
+				trees = append(trees, path)
+			}
+		}
+	}
+	return trees
+}
+
+// mainCheckout is the root of the main working tree of the repo containing
+// dir, or "" when there is none (not a repo, or a bare one). git lists the
+// main working tree first, wherever a linked one was put.
+func mainCheckout(dir string) string {
+	out, err := output("git", "-C", dir, "worktree", "list", "--porcelain")
+	if err != nil {
+		return ""
+	}
+	first, _, _ := strings.Cut(out, "\n\n")
+	lines := strings.Split(first, "\n")
+	if slices.Contains(lines, "bare") {
+		return ""
+	}
+	for _, line := range lines {
+		if path, ok := strings.CutPrefix(line, "worktree "); ok {
+			return path
+		}
+	}
+	return ""
 }
 
 func expandedRoots(cfg config.Config) []string {
@@ -276,6 +336,21 @@ func memoryInit(ctx *cli.Context, l memoryLayout, dry bool) error {
 		}
 	}
 
+	// A host CLAUDE.md from before the branch rule existed gets the rule
+	// appended. Nothing else in the file is touched.
+	if host, err := os.ReadFile(l.hostClaude()); err == nil && !bytes.Contains(host, []byte(branchRuleMarker)) {
+		say("%s the branch rule to %s", verb("append"), tildePath(l.hostClaude()))
+		if !dry {
+			sep := "\n"
+			if !bytes.HasSuffix(host, []byte("\n")) {
+				sep = "\n\n"
+			}
+			if err := os.WriteFile(l.hostClaude(), append(host, []byte(sep+branchRuleSection)...), 0o644); err != nil {
+				return err
+			}
+		}
+	}
+
 	raw, err := os.ReadFile(l.settingsPath())
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
@@ -339,6 +414,9 @@ func memoryInitAll(ctx *cli.Context, dry bool) error {
 		return fmt.Errorf("no roots configured; add claude.memory.roots to %s", mustConfigPath())
 	}
 	var failed int
+	// A linked worktree found in the tree resolves to its main checkout, which
+	// the walk reaches on its own.
+	done := map[string]bool{}
 	for _, root := range roots {
 		for _, top := range findCheckouts(config.Expand(root), 3) {
 			l, err := resolveMemoryRepo(ctx.Config, top)
@@ -346,6 +424,10 @@ func memoryInitAll(ctx *cli.Context, dry bool) error {
 				continue
 			}
 			if err == nil {
+				if done[l.Top] {
+					continue
+				}
+				done[l.Top] = true
 				err = memoryInit(ctx, l, dry)
 			}
 			if err != nil {
@@ -384,7 +466,12 @@ func findCheckouts(root string, depth int) []string {
 }
 
 func memoryStatus(ctx *cli.Context, l memoryLayout) {
-	fmt.Fprintf(ctx.Stdout, "%s  (%s/%s/%s)\n\n", l.Top, l.Host, l.Org, l.Repo)
+	fmt.Fprintf(ctx.Stdout, "%s  (%s/%s/%s)\n", l.Top, l.Host, l.Org, l.Repo)
+	if l.Worktree != "" {
+		fmt.Fprintf(ctx.Stdout, "  asked from the linked worktree %s, which uses the main checkout's settings\n",
+			tildePath(l.Worktree))
+	}
+	fmt.Fprintln(ctx.Stdout)
 	layer := func(name, dir, how string) {
 		lines := "missing"
 		if data, err := os.ReadFile(filepath.Join(dir, "MEMORY.md")); err == nil {
@@ -402,31 +489,126 @@ func memoryStatus(ctx *cli.Context, l memoryLayout) {
 	layer("company", filepath.Join(l.HostDir, "memory"), orgHow)
 	layer("org", filepath.Join(l.OrgDir, "memory"), orgHow)
 
+	shared, guarded := memorySettingsState(l)
 	repoHow := "auto memory"
-	if !memorySettingsCurrent(l) {
+	if !shared {
 		repoHow = "NOT used: " + l.settingsPath() + " does not point here"
 	}
 	layer("repo", l.repoMemory(), repoHow)
 	fmt.Fprintf(ctx.Stdout, "  %-8s %s\n", "plans", tildePath(l.plans()))
+	guardHow := "writes to company and org memory prompt first"
+	if !guarded {
+		guardHow = "NOT in place: company and org memory can be written without a prompt"
+	}
+	fmt.Fprintf(ctx.Stdout, "  %-8s %s\n", "guard", guardHow)
 
 	if !memorySettingsCurrent(l) || !strings.HasPrefix(orgHow, "loads") {
 		fmt.Fprintf(ctx.Stdout, "\nrun: devz memory init %s\n", l.Top)
 	}
 }
 
-// checkMemory is the doctor check for the repo in cwd.
-func checkMemory(cfg config.Config, cwd string) result {
+// checkMemory is the doctor checks for the repo in cwd.
+func checkMemory(cfg config.Config, cwd string) []result {
 	if len(cfg.Claude.Memory.Hosts) == 0 {
-		return skip("claude:memory", "claude.memory.hosts not set")
+		return []result{skip("claude:memory", "claude.memory.hosts not set")}
 	}
 	l, err := resolveMemoryRepo(cfg, cwd)
 	if err != nil {
-		return skip("claude:memory", "not in a repo on a configured host")
+		return []result{skip("claude:memory", "not in a repo on a configured host")}
 	}
-	if !memorySettingsCurrent(l) {
-		return warn("claude:memory", "this repo's memory is not shared", "devz memory init")
+	return memoryResults(l)
+}
+
+// memoryResults checks one repo: that its memory is shared, that the shared
+// layers are guarded, and that the host file carries the branch rule. The
+// last two only mean something once the first holds.
+func memoryResults(l memoryLayout) []result {
+	shared, guarded := memorySettingsState(l)
+	if !shared {
+		return []result{warn("claude:memory", "this repo's memory is not shared", "devz memory init")}
 	}
-	return ok("claude:memory", l.Host+"/"+l.Org+"/"+l.Repo)
+	name := l.Host + "/" + l.Org + "/" + l.Repo
+	if l.Worktree != "" {
+		name += " (worktree of " + tildePath(l.Top) + ")"
+	}
+	out := []result{ok("claude:memory", name)}
+
+	if guarded {
+		out = append(out, ok("claude:memory-guard", "writes to company and org memory prompt first"))
+	} else {
+		out = append(out, warn("claude:memory-guard",
+			"company and org memory can be written without a prompt", "devz memory init"))
+	}
+
+	if host, err := os.ReadFile(l.hostClaude()); err == nil && bytes.Contains(host, []byte(branchRuleMarker)) {
+		out = append(out, ok("claude:memory-rule", "branch rule is in "+tildePath(l.hostClaude())))
+	} else {
+		out = append(out, warn("claude:memory-rule",
+			"the branch rule is missing from "+tildePath(l.hostClaude()), "devz memory init"))
+	}
+	return out
+}
+
+// memorySettingsState reads the settings Claude Code will use for l: whether
+// auto memory and plans point at the store, and whether the guard is in place.
+func memorySettingsState(l memoryLayout) (shared, guarded bool) {
+	raw, err := os.ReadFile(l.settingsPath())
+	if err != nil {
+		return false, false
+	}
+	var settings struct {
+		AutoMemoryDirectory string `json:"autoMemoryDirectory"`
+		PlansDirectory      string `json:"plansDirectory"`
+		Permissions         struct {
+			Allow []string `json:"allow"`
+			Ask   []string `json:"ask"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return false, false
+	}
+	shared = settings.AutoMemoryDirectory == l.repoMemory() && settings.PlansDirectory == l.plans()
+	g := l.guard()
+	guarded = !slices.Contains(settings.Permissions.Allow, g.legacy)
+	for _, rule := range g.ask {
+		if !slices.Contains(settings.Permissions.Ask, rule) {
+			guarded = false
+		}
+	}
+	return shared, guarded
+}
+
+// memoryGuard is the permission rules that keep the shared layers from being
+// written without a prompt.
+type memoryGuard struct {
+	// allow: this repo's own memory and the org's plans, written freely.
+	allow []string
+	// ask: the company and org layers, in every org on the host. An ask rule
+	// holds even in accept-edits mode, where an additional directory is
+	// otherwise written without a prompt.
+	ask []string
+	// legacy is the rule earlier versions wrote, allowing the whole host
+	// directory. It is removed.
+	legacy string
+}
+
+func (l memoryLayout) guard() memoryGuard {
+	host := permissionPath(l.HostDir)
+	return memoryGuard{
+		allow: []string{
+			"Edit(" + permissionPath(l.repoMemory()) + "/**)",
+			"Edit(" + permissionPath(l.plans()) + "/**)",
+		},
+		// * matches one path segment, so */memory is an org's memory and
+		// never a repo's, which sits deeper.
+		ask: []string{
+			"Edit(" + host + "/memory/**)",
+			"Edit(" + host + "/CLAUDE.md)",
+			"Edit(" + host + "/*/memory/**)",
+			"Edit(" + host + "/*/CLAUDE.md)",
+		},
+		legacy: "Edit(" + host + "/**)",
+	}
 }
 
 func memorySettingsCurrent(l memoryLayout) bool {
@@ -476,13 +658,25 @@ func mergeMemorySettings(raw []byte, l memoryLayout) ([]byte, bool, error) {
 		}
 		return nil
 	}
-	// The host dir covers the company and org layers; the repo layer is
-	// under it too.
+	// The host dir stays readable from every repo on it, so a session can
+	// consult another org's memory. Writing is narrower: see memoryGuard.
 	if err := appendUnique("additionalDirectories", l.HostDir); err != nil {
 		return nil, false, err
 	}
-	if err := appendUnique("allow", "Edit("+permissionPath(l.HostDir)+"/**)"); err != nil {
-		return nil, false, err
+	g := l.guard()
+	for _, rule := range g.allow {
+		if err := appendUnique("allow", rule); err != nil {
+			return nil, false, err
+		}
+	}
+	for _, rule := range g.ask {
+		if err := appendUnique("ask", rule); err != nil {
+			return nil, false, err
+		}
+	}
+	if list, _ := perms["allow"].([]any); slices.Contains(list, any(g.legacy)) {
+		perms["allow"] = slices.DeleteFunc(slices.Clone(list), func(v any) bool { return v == any(g.legacy) })
+		changed = true
 	}
 
 	out, err := json.MarshalIndent(settings, "", "  ")
@@ -598,6 +792,22 @@ func orgImports(l memoryLayout) string {
 		tildePath(l.hostClaude()), tildePath(filepath.Join(l.OrgDir, "memory", "MEMORY.md")))
 }
 
+// branchRuleMarker lets init and doctor tell whether a host CLAUDE.md already
+// carries the rule, however the surrounding text has been edited.
+const branchRuleMarker = "<!-- devz:branch-rule -->"
+
+// branchRuleSection is the price of sharing one repo memory between every
+// worktree of a repo: what is saved has to be true on all of them.
+const branchRuleSection = `## What not to save
+
+` + branchRuleMarker + `
+Save a memory only if it holds whatever branch is checked out. Every worktree
+of a repository shares one repo memory, so a fact that is true on one branch
+only, such as "the locations route is half migrated", loads in all the others,
+where it is false. In-progress and branch-specific state goes in the plan file,
+the pull request or the task, not in memory.
+`
+
 func hostClaudeTemplate(l memoryLayout) string {
 	mem := tildePath(filepath.Join(l.HostDir, "memory"))
 	return fmt.Sprintf(`# %[1]s
@@ -620,6 +830,7 @@ write the memory file in that directory and add its one-line pointer to the
 MEMORY.md there. When a repo memory turns out to hold for other repos too,
 move it up a layer and move its index line with it.
 
+`+branchRuleSection+`
 Company memory index (`+"`%[2]s/MEMORY.md`"+`):
 
 @%[2]s/MEMORY.md

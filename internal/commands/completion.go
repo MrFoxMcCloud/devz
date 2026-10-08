@@ -92,7 +92,7 @@ _devz() {
           _values 'shell' zsh bash
           ;;
         doctor)
-          _values 'flag' --quiet
+          _values 'flag' --quiet --all
           ;;
         help)
           _describe -t commands 'devz command' commands
@@ -137,7 +137,7 @@ _devz() {
       fi
       ;;
     completion) COMPREPLY=( $(compgen -W "zsh bash" -- "$cur") ) ;;
-    doctor)     COMPREPLY=( $(compgen -W "--quiet" -- "$cur") ) ;;
+    doctor)     COMPREPLY=( $(compgen -W "--quiet --all" -- "$cur") ) ;;
     help)       COMPREPLY=( $(compgen -W "$(devz completion --commands 2>/dev/null)" -- "$cur") ) ;;
   esac
 }

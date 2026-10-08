@@ -43,6 +43,11 @@ devz completion zsh > ~/.local/share/zsh/site-functions/_devz   # any dir on $fp
 exec zsh
 ```
 
+Regenerate it after every upgrade: `go install` runs nothing once it has
+installed, so the file keeps the old subcommand lists. `devz doctor` warns when
+the installed script is not the one this build writes, and its fix line is the
+command to run.
+
 ## First run
 
 ```sh
@@ -96,7 +101,10 @@ with different settings than the file says is the failure worth preventing.
 ### `devz doctor`
 
 Every check that applies to this machine, with the fix for anything off.
-`--quiet` prints only problems. Notable checks:
+`--quiet` prints only problems. `--all` also runs the per-repo Claude checks
+over every checkout under `claude.memory.roots` and resolves the account of
+each of their linked worktrees; it prints one line per problem, or a single
+summary line. Notable checks:
 
 | id | what it catches |
 |---|---|
@@ -106,8 +114,12 @@ Every check that applies to this machine, with the fix for anything off.
 | `pass:entries` | configured secrets missing from the store (checked on disk, so doctor never triggers a prompt of its own) |
 | `pass:backup` | a store with no git remote: one copy, one disk |
 | `claude:memory` | a repo on a `claude.memory.hosts` forge whose Claude memory is not shared yet |
+| `claude:memory-guard` | a repo where Claude can still write company or org memory without being asked |
+| `claude:memory-rule` | a host `CLAUDE.md` without the branch rule |
+| `claude:memory-backup`, `claude:shared-backup` | the memory store, or `claude.sharedDir`, not being a git repo of its own, having no remote, or holding uncommitted or unpushed changes. No network call: "pushed" is against the upstream as last fetched |
 | `gh:auth` | which GitHub account is actually active |
 | `devz:build` | a work-in-progress devz installed on PATH instead of a release |
+| `completion:zsh`, `completion:bash` | an installed completion script that an older devz wrote. `go install` runs nothing after installing, so new subcommands do not complete until the file is regenerated; the fix line is the command |
 
 ### `devz secrets`
 
@@ -195,16 +207,41 @@ keys it on the repo's origin URL instead, and adds two shared layers above it:
 
 For one repo, `init`:
 
-- writes `autoMemoryDirectory`, `plansDirectory` and permission to edit the
-  store into the checkout's `.claude/settings.local.json`, keeping anything
-  else there, and adds that file to your global git ignore;
+- writes `autoMemoryDirectory`, `plansDirectory` and the guard (below) into
+  the checkout's `.claude/settings.local.json`, keeping anything else there,
+  and adds that file to your global git ignore;
 - links the org's `CLAUDE.md` and `plans/` into the directory above the repo,
   when the checkout sits at `<root>/<org>/<repo>`. Claude Code loads a parent
   directory's `CLAUDE.md`, and the org one imports the org and company memory
   indexes. So in `infra` you get company + org + infra memory, and never
   `backend`'s;
 - creates missing store files from templates. A hand-written org `CLAUDE.md`
-  already in the org folder is moved into the store and linked back.
+  already in the org folder is moved into the store and linked back;
+- appends the branch rule to the host `CLAUDE.md` when it is not there yet.
+
+**The guard.** Shared layers are worth protecting from a session that saves
+too eagerly, so `init` writes permission rules, not a blanket grant:
+
+| Path | Rule |
+|---|---|
+| this repo's memory, the org's `plans/` | `allow`: written freely |
+| `<host>/memory/`, `<host>/CLAUDE.md`, every `<host>/<org>/memory/` and `<host>/<org>/CLAUDE.md` | `ask`: Claude asks first |
+
+An `ask` rule holds in accept-edits mode too, where an additional directory is
+otherwise written without a prompt. The whole host directory stays readable,
+so a session can consult another org's memory. It covers Claude's file-editing
+tools, not a shell command that writes the file. Rerunning `init` removes the
+broad `allow` on the host directory that versions before 1.4 wrote.
+
+**The branch rule.** Every worktree of a repo shares one repo memory, so a
+memory has to be true whatever branch is checked out. The host `CLAUDE.md`
+says so, marked with `<!-- devz:branch-rule -->` so `init` and `doctor` can
+find it however the file has been edited.
+
+**Worktrees.** Linked git worktrees need no setup: Claude Code reads the main
+checkout's `.claude/settings.local.json` in every worktree of a repo, wherever
+the worktree sits. Run from inside one, `status` and `init` act on the main
+checkout, and `init` never writes a settings file into a worktree.
 
 Only repos whose origin host is in `claude.memory.hosts` are touched. `init`
 never overwrites a file it did not create, never links into a search root
