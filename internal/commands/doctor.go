@@ -66,6 +66,7 @@ func runDoctor(ctx *cli.Context, args []string) error {
 		add(checkClaude(cfg)...)
 	}
 	add(checkGH())
+	add(checkCompletion()...)
 	add(checkPlugins())
 
 	width := 0
@@ -298,4 +299,108 @@ func checkPlugins() result {
 		names = append(names, p.Name)
 	}
 	return ok("plugins", strings.Join(names, ", "))
+}
+
+// checkCompletion flags an installed completion script that a different devz
+// wrote. `go install` runs nothing after it installs, so an upgrade cannot
+// refresh the file: the new subcommands exist but do not complete until it is
+// regenerated.
+func checkCompletion() []result {
+	var out []result
+	for _, sh := range []struct {
+		name, script string
+		files        []string
+	}{
+		{"zsh", zshCompletion, zshCompletionFiles()},
+		{"bash", bashCompletion, bashCompletionFiles()},
+	} {
+		if r, found := completionResult(sh.name, sh.script, sh.files); found {
+			out = append(out, r)
+		}
+	}
+	if len(out) == 0 {
+		return []result{skip("completion", "no installed script found; see 'devz help completion'")}
+	}
+	return out
+}
+
+// completionResult compares the first candidate that exists with the script
+// this build emits. Only the first matters: it is the one the shell loads.
+func completionResult(shell, script string, candidates []string) (result, bool) {
+	id := "completion:" + shell
+	for _, path := range candidates {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if string(data) == script {
+			return ok(id, tildePath(path)), true
+		}
+		return warn(id, tildePath(path)+" was written by a different devz version",
+			"devz completion "+shell+" > "+tildePath(path)), true
+	}
+	return result{}, false
+}
+
+// zshCompletionFiles lists where _devz may be installed, in the order zsh
+// would find it: $FPATH when the shell exports it (oh-my-zsh does), then the
+// usual directories for shells that do not.
+func zshCompletionFiles() []string {
+	home, _ := os.UserHomeDir()
+	dirs := filepath.SplitList(os.Getenv("FPATH"))
+	if custom := os.Getenv("ZSH_CUSTOM"); custom != "" {
+		dirs = append(dirs, filepath.Join(custom, "completions"))
+	}
+	if omz := os.Getenv("ZSH"); omz != "" {
+		dirs = append(dirs, filepath.Join(omz, "custom", "completions"), filepath.Join(omz, "completions"))
+	}
+	if home != "" {
+		dirs = append(dirs,
+			filepath.Join(home, ".oh-my-zsh", "custom", "completions"),
+			filepath.Join(home, ".local", "share", "zsh", "site-functions"),
+			filepath.Join(home, ".zsh", "completions"),
+			filepath.Join(home, ".zfunc"))
+	}
+	if brew := os.Getenv("HOMEBREW_PREFIX"); brew != "" {
+		dirs = append(dirs, filepath.Join(brew, "share", "zsh", "site-functions"))
+	}
+	dirs = append(dirs, "/usr/local/share/zsh/site-functions", "/usr/share/zsh/site-functions")
+	return candidateFiles(dirs, "_devz")
+}
+
+// bashCompletionFiles lists where bash-completion looks for a script named
+// after the command.
+func bashCompletionFiles() []string {
+	home, _ := os.UserHomeDir()
+	var dirs []string
+	if user := os.Getenv("BASH_COMPLETION_USER_DIR"); user != "" {
+		dirs = append(dirs, filepath.Join(user, "completions"))
+	}
+	if data := os.Getenv("XDG_DATA_HOME"); data != "" {
+		dirs = append(dirs, filepath.Join(data, "bash-completion", "completions"))
+	}
+	if home != "" {
+		dirs = append(dirs, filepath.Join(home, ".local", "share", "bash-completion", "completions"))
+	}
+	if brew := os.Getenv("HOMEBREW_PREFIX"); brew != "" {
+		dirs = append(dirs, filepath.Join(brew, "etc", "bash_completion.d"))
+	}
+	dirs = append(dirs, "/usr/local/etc/bash_completion.d", "/etc/bash_completion.d",
+		"/usr/share/bash-completion/completions")
+	return candidateFiles(dirs, "devz")
+}
+
+// candidateFiles joins name onto each directory, dropping empty and repeated
+// directories while keeping the order.
+func candidateFiles(dirs []string, name string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, dir := range dirs {
+		if dir == "" || seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		out = append(out, filepath.Join(dir, name))
+	}
+	return out
 }

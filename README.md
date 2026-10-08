@@ -43,6 +43,11 @@ devz completion zsh > ~/.local/share/zsh/site-functions/_devz   # any dir on $fp
 exec zsh
 ```
 
+Regenerate it after every upgrade: `go install` runs nothing once it has
+installed, so the file keeps the old subcommand lists. `devz doctor` warns when
+the installed script is not the one this build writes, and its fix line is the
+command to run.
+
 ## First run
 
 ```sh
@@ -108,6 +113,7 @@ Every check that applies to this machine, with the fix for anything off.
 | `claude:memory` | a repo on a `claude.memory.hosts` forge whose Claude memory is not shared yet |
 | `gh:auth` | which GitHub account is actually active |
 | `devz:build` | a work-in-progress devz installed on PATH instead of a release |
+| `completion:zsh`, `completion:bash` | an installed completion script that an older devz wrote. `go install` runs nothing after installing, so new subcommands do not complete until the file is regenerated; the fix line is the command |
 
 ### `devz secrets`
 
