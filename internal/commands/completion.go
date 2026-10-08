@@ -67,10 +67,10 @@ _devz() {
       case $line[1] in
         secrets)
           local -a subs
-          subs=(unlock status list show edit add env exec cached)
+          subs=(unlock status list show rotate edit add map env exec cached)
           if (( CURRENT == 2 )); then
             _describe -t subcommands 'secrets subcommand' subs
-          elif [[ $line[2] == (show|edit) ]]; then
+          elif [[ $line[2] == (show|edit|rotate|map) ]] && (( CURRENT == 3 )); then
             local -a entries
             entries=(${(f)"$(devz secrets list 2>/dev/null)"})
             _describe -t entries 'entry' entries
@@ -119,9 +119,11 @@ _devz() {
   case "${COMP_WORDS[1]}" in
     secrets)
       if [ "$COMP_CWORD" -eq 2 ]; then
-        COMPREPLY=( $(compgen -W "unlock status list show edit add env exec cached" -- "$cur") )
-      elif [ "$prev" = show ] || [ "$prev" = edit ]; then
-        COMPREPLY=( $(compgen -W "$(devz secrets list 2>/dev/null)" -- "$cur") )
+        COMPREPLY=( $(compgen -W "unlock status list show rotate edit add map env exec cached" -- "$cur") )
+      elif [ "$COMP_CWORD" -eq 3 ]; then
+        case "$prev" in show|edit|rotate|map)
+          COMPREPLY=( $(compgen -W "$(devz secrets list 2>/dev/null)" -- "$cur") ) ;;
+        esac
       fi
       ;;
     config)     COMPREPLY=( $(compgen -W "show path init edit" -- "$cur") ) ;;

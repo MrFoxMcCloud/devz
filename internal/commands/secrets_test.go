@@ -173,3 +173,174 @@ func TestWithEnvReplacesExisting(t *testing.T) {
 		t.Errorf("withEnv = %q, want %q", got, want)
 	}
 }
+
+func TestParseMapArgs(t *testing.T) {
+	cases := []struct {
+		args          []string
+		entry, envVar string
+		clear         bool
+		wantErr       bool
+	}{
+		{args: []string{"team/token", "TEAM_TOKEN"}, entry: "team/token", envVar: "TEAM_TOKEN"},
+		{args: []string{"team/token", "--clear"}, entry: "team/token", clear: true},
+		{args: []string{"--clear", "team/token"}, entry: "team/token", clear: true},
+		{args: []string{"team/token"}, wantErr: true},
+		{args: []string{"team/token", "TEAM_TOKEN", "--clear"}, wantErr: true},
+		{args: []string{"team/token", "A", "B"}, wantErr: true},
+		{args: []string{"--clear"}, wantErr: true},
+		{args: []string{"team/token", "--env", "TEAM_TOKEN"}, wantErr: true},
+		{args: []string{"team/token", "1BAD"}, wantErr: true},
+		{args: []string{"team/token", "X;rm -rf ~"}, wantErr: true},
+		{args: []string{"../outside", "TEAM_TOKEN"}, wantErr: true},
+		{args: []string{"team/token.gpg", "TEAM_TOKEN"}, wantErr: true},
+	}
+	for _, c := range cases {
+		entry, envVar, clear, err := parseMapArgs(c.args)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("parseMapArgs(%q) = %q, %q, %v; want an error", c.args, entry, envVar, clear)
+			}
+			continue
+		}
+		if err != nil || entry != c.entry || envVar != c.envVar || clear != c.clear {
+			t.Errorf("parseMapArgs(%q) = %q, %q, %v, %v; want %q, %q, %v",
+				c.args, entry, envVar, clear, err, c.entry, c.envVar, c.clear)
+		}
+	}
+}
+
+// mapEnv gives secretsMap a config file and a store holding the named
+// entries as empty .gpg files. map only checks that an entry exists, so the
+// tests never need pass or gpg.
+func mapEnv(t *testing.T, entries ...string) config.Config {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("DEVZ_CONFIG", dir+"/config.json")
+	cfg := config.Default()
+	cfg.Secrets.Store = dir + "/store"
+	for _, e := range entries {
+		path := cfg.Secrets.Store + "/" + e + ".gpg"
+		if err := os.MkdirAll(path[:strings.LastIndex(path, "/")], 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return cfg
+}
+
+// runMap runs secretsMap against cfg and returns what was saved, as the next
+// devz invocation would load it.
+func runMap(t *testing.T, cfg config.Config, args ...string) (config.Config, string, error) {
+	t.Helper()
+	var out bytes.Buffer
+	err := secretsMap(&cli.Context{Config: cfg, Stdout: &out, Stderr: os.Stderr}, args)
+	saved, loadErr := config.Load()
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	return saved, out.String(), err
+}
+
+func TestSecretsMapAssignsAForgottenVariable(t *testing.T) {
+	cfg := mapEnv(t, "team/token")
+	cfg.Secrets.Entries = []string{"team/token"} // added earlier, without --env
+
+	saved, out, err := runMap(t, cfg, "team/token", "TEAM_TOKEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Secrets.EnvVars["team/token"] != "TEAM_TOKEN" {
+		t.Errorf("envVars = %v", saved.Secrets.EnvVars)
+	}
+	if got := strings.Join(saved.Secrets.Entries, ","); got != "team/token" {
+		t.Errorf("entries = %s, want the entry listed once", got)
+	}
+	if !strings.Contains(out, "now exported as TEAM_TOKEN") {
+		t.Errorf("output = %q", out)
+	}
+	if len(cfg.Secrets.EnvVars) != 0 {
+		t.Errorf("the caller's config was changed in place: %v", cfg.Secrets.EnvVars)
+	}
+}
+
+func TestSecretsMapChangesAndClears(t *testing.T) {
+	cfg := mapEnv(t, "team/token")
+	cfg.Secrets.Entries = []string{"team/token"}
+	cfg.Secrets.EnvVars = map[string]string{"team/token": "OLD_NAME"}
+
+	saved, out, err := runMap(t, cfg, "team/token", "NEW_NAME")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Secrets.EnvVars["team/token"] != "NEW_NAME" || !strings.Contains(out, "was OLD_NAME") {
+		t.Errorf("envVars = %v, output = %q", saved.Secrets.EnvVars, out)
+	}
+
+	saved, out, err = runMap(t, saved, "team/token", "--clear")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, still := saved.Secrets.EnvVars["team/token"]; still {
+		t.Errorf("envVars after --clear = %v", saved.Secrets.EnvVars)
+	}
+	if got := strings.Join(saved.Secrets.Entries, ","); got != "team/token" {
+		t.Errorf("--clear dropped the entry itself: entries = %s", got)
+	}
+	if !strings.Contains(out, "no longer exported") {
+		t.Errorf("output = %q", out)
+	}
+}
+
+func TestSecretsMapAdoptsAnEntryPassAlreadyHolds(t *testing.T) {
+	// Inserted with plain `pass insert`, so the config has never heard of it.
+	cfg := mapEnv(t, "team/raw")
+	saved, _, err := runMap(t, cfg, "team/raw", "TEAM_RAW")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(saved.Secrets.Entries, ","); got != "team/raw" {
+		t.Errorf("entries = %s, want the entry adopted", got)
+	}
+	if saved.Secrets.EnvVars["team/raw"] != "TEAM_RAW" {
+		t.Errorf("envVars = %v", saved.Secrets.EnvVars)
+	}
+}
+
+func TestSecretsMapRefusals(t *testing.T) {
+	cfg := mapEnv(t, "team/token", "team/other")
+	cfg.Secrets.Entries = []string{"team/token", "team/other"}
+	cfg.Secrets.EnvVars = map[string]string{"team/token": "TEAM_TOKEN"}
+
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"team/missing", "TEAM_MISSING"}, "not in the store"},
+		{[]string{"team/other", "TEAM_TOKEN"}, "already exported from team/token"},
+		{[]string{"team/other"}, "usage"},
+	} {
+		saved, _, err := runMap(t, cfg, c.args...)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("secretsMap(%q) = %v, want an error containing %q", c.args, err, c.want)
+		}
+		if len(saved.Secrets.Entries) != 0 {
+			t.Errorf("secretsMap(%q) wrote a config despite failing", c.args)
+		}
+	}
+}
+
+func TestSecretsMapListsEveryEntry(t *testing.T) {
+	cfg := mapEnv(t)
+	cfg.Secrets.Entries = []string{"team/token", "team/unmapped"}
+	cfg.Secrets.EnvVars = map[string]string{"team/token": "TEAM_TOKEN"}
+	_, out, err := runMap(t, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "team/token     TEAM_TOKEN\nteam/unmapped  (not exported)\n"
+	if out != want {
+		t.Errorf("listing =\n%swant\n%s", out, want)
+	}
+}

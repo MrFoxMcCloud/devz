@@ -24,7 +24,7 @@ func Secrets() *cli.Command {
 	return &cli.Command{
 		Name:  "secrets",
 		Short: "unlock and inspect the local secret store",
-		Usage: `usage: devz secrets <cached|env|exec|unlock|status|list|show|edit|add> [args]
+		Usage: `usage: devz secrets <cached|env|exec|unlock|status|list|show|rotate|add|map> [args]
 
   cached        exit 0 if the agent cache is warm, 1 if cold (no output)
   env [names]   print export lines for the configured entries, for eval
@@ -35,11 +35,19 @@ func Secrets() *cli.Command {
   status        whether the cache is warm, and which entries exist
   list          the entries this machine is expected to hold
   show <entry>  print one secret (delegates to pass)
-  edit <entry>  rotate one secret (delegates to pass)
+  rotate <entry>
+                change one secret's value (delegates to pass edit). 'edit' is
+                the older name for the same thing
   add <entry> [--env NAME]
                 store a new secret (via pass insert) and add it to this
                 machine's config: secrets.entries, plus secrets.envVars when
                 --env names the variable 'devz secrets env' should export
+  map           which variable each entry is exported as
+  map <entry> NAME
+                set or change the variable an entry already in the store is
+                exported as. Only the config changes; the secret is not read
+  map <entry> --clear
+                stop exporting an entry
 
 The env subcommand replaces exporting a token from a shell rc file. Instead of
 plaintext on disk and in the environment of every process you start:
@@ -57,6 +65,11 @@ To add a token and have env and exec provide it from then on:
 
     devz secrets add team/api-token --env TEAM_API_TOKEN
 
+Forgot --env, or want a different name? map fixes the config without touching
+the secret:
+
+    devz secrets map team/api-token TEAM_API_TOKEN
+
 Why unlock exists: processes spawned without a TTY -- MCP servers, editor
 extensions -- cannot show a passphrase prompt, so they fail at startup if the
 agent cache is cold. Warming it from a terminal once is the fix.`,
@@ -66,7 +79,7 @@ agent cache is cold. Warming it from a terminal once is the fix.`,
 
 func runSecrets(ctx *cli.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("expected a subcommand (cached, env, exec, unlock, status, list, show, edit, add)")
+		return fmt.Errorf("expected a subcommand (cached, env, exec, unlock, status, list, show, rotate, add, map)")
 	}
 	cfg := ctx.Config
 	if cfg.Secrets.Backend != "pass" {
@@ -98,13 +111,20 @@ func runSecrets(ctx *cli.Context, args []string) error {
 			fmt.Fprintln(ctx.Stdout, e)
 		}
 		return nil
-	case "show", "edit":
+	case "show", "edit", "rotate":
 		if len(args) < 2 {
 			return fmt.Errorf("%s needs an entry name", args[0])
 		}
-		return passthrough(cfg, args[0], args[1])
+		verb := args[0]
+		if verb == "rotate" {
+			// pass has no rotate; its edit is how a value is changed.
+			verb = "edit"
+		}
+		return passthrough(cfg, verb, args[1])
 	case "add":
 		return secretsAdd(ctx, args[1:])
+	case "map":
+		return secretsMap(ctx, args[1:])
 	default:
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
@@ -222,10 +242,11 @@ func secretsAdd(ctx *cli.Context, args []string) error {
 	if err := registerSecret(&cfg, entry, envVar); err != nil {
 		return err
 	}
-	// add is for new secrets only: overwriting one is what edit is for, and
+	// add is for new secrets only: overwriting one is what rotate is for, and
 	// pass would replace it without asking when the value is piped in.
 	if exists(filepath.Join(storeDir(cfg), entry+".gpg")) {
-		return fmt.Errorf("%s is already in the store; use 'devz secrets edit %s' to change it", entry, entry)
+		return fmt.Errorf("%s is already in the store; use 'devz secrets rotate %s' to change its value, "+
+			"or 'devz secrets map %s NAME' to export it", entry, entry, entry)
 	}
 
 	// On a terminal pass prompts twice with echo off. From a pipe, --echo
@@ -272,8 +293,7 @@ func parseAddArgs(args []string) (entry, envVar string, err error) {
 	if entry == "" {
 		return "", "", fmt.Errorf("add needs an entry name")
 	}
-	if strings.HasPrefix(entry, "/") || strings.HasSuffix(entry, "/") ||
-		strings.HasSuffix(entry, ".gpg") || slices.Contains(strings.Split(entry, "/"), "..") {
+	if !validEntryName(entry) {
 		return "", "", fmt.Errorf("invalid entry name %q", entry)
 	}
 	if envVar != "" && !validEnvName(envVar) {
@@ -281,6 +301,124 @@ func parseAddArgs(args []string) (entry, envVar string, err error) {
 		return "", "", fmt.Errorf("invalid environment variable name %q", envVar)
 	}
 	return entry, envVar, nil
+}
+
+// validEntryName rejects names that would point outside the store.
+func validEntryName(entry string) bool {
+	return entry != "" && !strings.HasPrefix(entry, "/") && !strings.HasSuffix(entry, "/") &&
+		!strings.HasSuffix(entry, ".gpg") && !slices.Contains(strings.Split(entry, "/"), "..")
+}
+
+// secretsMap shows or changes which variable an entry is exported as. It is
+// the fix for a secret added without --env: only the config changes, so it
+// never reads the store and never needs the agent cache.
+func secretsMap(ctx *cli.Context, args []string) error {
+	cfg := ctx.Config
+	if len(args) == 0 {
+		return printMappings(ctx)
+	}
+	entry, envVar, clear, err := parseMapArgs(args)
+	if err != nil {
+		return err
+	}
+	// The config should never name a secret the store does not hold: env and
+	// exec would then fail at the moment something needs the value.
+	if !exists(filepath.Join(storeDir(cfg), entry+".gpg")) {
+		return fmt.Errorf("%s is not in the store; use 'devz secrets add %s --env NAME' to create it", entry, entry)
+	}
+
+	was := cfg.Secrets.EnvVars[entry]
+	if clear {
+		if was == "" {
+			fmt.Fprintf(ctx.Stdout, "%s is not exported; nothing to clear\n", entry)
+			return nil
+		}
+		// Copy before deleting: cfg shares its map with ctx.Config.
+		vars := maps.Clone(cfg.Secrets.EnvVars)
+		delete(vars, entry)
+		cfg.Secrets.EnvVars = vars
+	} else {
+		if was == envVar && slices.Contains(cfg.Secrets.Entries, entry) {
+			fmt.Fprintf(ctx.Stdout, "%s is already exported as %s\n", entry, envVar)
+			return nil
+		}
+		cfg.Secrets.EnvVars = maps.Clone(cfg.Secrets.EnvVars)
+		if err := registerSecret(&cfg, entry, envVar); err != nil {
+			return err
+		}
+	}
+
+	path, err := config.Save(cfg)
+	if err != nil {
+		return fmt.Errorf("could not update the config: %w", err)
+	}
+	switch {
+	case clear:
+		fmt.Fprintf(ctx.Stdout, "%s is no longer exported (was %s) in %s\n", entry, was, path)
+	case was != "":
+		fmt.Fprintf(ctx.Stdout, "%s is now exported as %s (was %s) in %s\n", entry, envVar, was, path)
+	default:
+		fmt.Fprintf(ctx.Stdout, "%s is now exported as %s in %s\n", entry, envVar, path)
+	}
+	return nil
+}
+
+func parseMapArgs(args []string) (entry, envVar string, clear bool, err error) {
+	var words []string
+	for _, a := range args {
+		switch {
+		case a == "--clear":
+			clear = true
+		case strings.HasPrefix(a, "-"):
+			return "", "", false, fmt.Errorf("unknown flag %q", a)
+		default:
+			words = append(words, a)
+		}
+	}
+	usage := fmt.Errorf("usage: devz secrets map <entry> NAME | devz secrets map <entry> --clear")
+	switch {
+	case clear && len(words) == 1:
+		entry = words[0]
+	case !clear && len(words) == 2:
+		entry, envVar = words[0], words[1]
+	default:
+		return "", "", false, usage
+	}
+	if !validEntryName(entry) {
+		return "", "", false, fmt.Errorf("invalid entry name %q", entry)
+	}
+	if !clear && !validEnvName(envVar) {
+		// The name goes unquoted into an export line meant for eval.
+		return "", "", false, fmt.Errorf("invalid environment variable name %q", envVar)
+	}
+	return entry, envVar, clear, nil
+}
+
+// printMappings lists every configured entry with the variable it is exported
+// as, so an entry that was added without --env is easy to spot.
+func printMappings(ctx *cli.Context) error {
+	s := ctx.Config.Secrets
+	entries := slices.Clone(s.Entries)
+	for entry := range s.EnvVars {
+		if !slices.Contains(entries, entry) {
+			entries = append(entries, entry)
+		}
+	}
+	if len(entries) == 0 {
+		return fmt.Errorf("no secrets.entries configured in %s", mustConfigPath())
+	}
+	width := 0
+	for _, entry := range entries {
+		width = max(width, len(entry))
+	}
+	for _, entry := range entries {
+		name := s.EnvVars[entry]
+		if name == "" {
+			name = "(not exported)"
+		}
+		fmt.Fprintf(ctx.Stdout, "%-*s  %s\n", width, entry, name)
+	}
+	return nil
 }
 
 // registerSecret adds entry (and its env var mapping, if any) to cfg.
