@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 devz is a single Go binary that dispatches local dev-environment commands
-(`doctor`, `secrets`, `account`, `memory`, `config`, `completion`, `version`), plus any
+(`doctor`, `secrets`, `claude`, `config`, `completion`, `version`), plus any
 `devz-<name>` executable on PATH as a plugin. See README.md for user-facing docs.
 
 ## Workflow rules
@@ -57,10 +57,23 @@ Run `make fmt vet test build` before calling a change done.
 
 ## Gotchas
 
-- Subcommand lists are **hardcoded** in the zsh and bash scripts in
-  `internal/commands/completion.go`. When you add a subcommand, update both
-  scripts, then run `make completions` so the checked-in `completions/` files
-  match.
+- The completion scripts hold no lists. Each command's `Complete` func
+  returns the candidates for the next word, and the scripts ask for them with
+  `devz completion --complete <words>`. When you add a subcommand, add it to
+  that command's `Complete`. Only touch the scripts in `completion.go` for a
+  change to the scripts themselves, then run `make completions`; every
+  installed copy then shows as stale in `devz doctor` until regenerated.
+- Renaming a command: keep the old name registered with `Deprecated` set to the
+  new one and `Hidden: true`. The dispatcher logs each use
+  (`internal/cli/deprecated.go`). For a renamed subcommand, call
+  `cli.NoteDeprecated` where the old spelling is handled, as `secrets edit`
+  does. Never remove an old name inside v1.
+- `claude` is a `Group`: an unknown `devz claude <sub>` runs
+  `devz-claude-<sub>` from PATH. When you compile such a plugin in, add it to
+  `claudeBuiltins` so `devz doctor` flags the script left behind.
+- A command that hands off to another program returns `cli.ExitError` with
+  the child's exit status, so the status survives and nothing is printed
+  twice.
 - When you add a subcommand or config field, also update the command's `Usage`
   text and README.md.
 - `memory` resolves a linked worktree to its main checkout

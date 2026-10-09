@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/MrFoxMcCloud/devz/internal/cli"
 	"github.com/MrFoxMcCloud/devz/internal/config"
@@ -15,10 +16,11 @@ import (
 //
 // On a shared tool this is the highest-value command: "is my machine right"
 // is the question that otherwise becomes a direct message to whoever wrote it.
-func Doctor() *cli.Command {
+func Doctor(app *cli.App) *cli.Command {
 	return &cli.Command{
-		Name:  "doctor",
-		Short: "check this machine's development environment",
+		Complete: func(*cli.Context, []string) []string { return []string{"--quiet", "--all"} },
+		Name:     "doctor",
+		Short:    "check this machine's development environment",
 		Usage: `usage: devz doctor [--quiet] [--all]
 
 Runs every check that applies to this machine and prints a fix for anything
@@ -31,11 +33,11 @@ that is off. Exits non-zero if any check fails, so it is usable in a script.
 Checks are skipped per-machine via "doctor.skip" in the config, which is how a
 teammate on a different OS turns off what does not apply to them. See
 'devz config show'.`,
-		Run: runDoctor,
+		Run: func(ctx *cli.Context, args []string) error { return runDoctor(ctx, app, args) },
 	}
 }
 
-func runDoctor(ctx *cli.Context, args []string) error {
+func runDoctor(ctx *cli.Context, app *cli.App, args []string) error {
 	quiet, all := false, false
 	for _, a := range args {
 		switch a {
@@ -82,7 +84,8 @@ func runDoctor(ctx *cli.Context, args []string) error {
 	}
 	add(checkGH())
 	add(checkCompletion()...)
-	add(checkPlugins())
+	add(checkPlugins(app)...)
+	add(checkDeprecated(time.Now()))
 
 	width := 0
 	for _, r := range results {
@@ -379,7 +382,7 @@ func checkAllCheckouts(cfg config.Config) []result {
 					} else {
 						r.detail = tildePath(top) + ": " + r.detail
 					}
-					r.fix = "devz memory init " + tildePath(top)
+					r.fix = "devz claude memory init " + tildePath(top)
 					out = append(out, r)
 				}
 			}
@@ -417,16 +420,69 @@ func checkGH() result {
 	return ok("gh:auth", user)
 }
 
-func checkPlugins() result {
-	plugins := cli.Plugins()
-	if len(plugins) == 0 {
-		return ok("plugins", "none on PATH")
-	}
-	names := make([]string, 0, len(plugins))
-	for _, p := range plugins {
+// checkPlugins lists the plugins on PATH, and flags any that can never run
+// because a built-in command has taken the name. That happens quietly when a
+// script is ported into the binary and the script is left behind.
+func checkPlugins(app *cli.App) []result {
+	var names []string
+	var out []result
+	for _, p := range cli.Plugins() {
+		if app.Command(p.Name) != nil {
+			out = append(out, warn("plugins", tildePath(p.Path)+" never runs: 'devz "+p.Name+"' is built in",
+				"remove or rename "+tildePath(p.Path)))
+			continue
+		}
+		if group, sub, found := strings.Cut(p.Name, "-"); found {
+			if cmd := app.Command(group); cmd != nil && cmd.Group {
+				if builtinSubcommand(group, sub) {
+					out = append(out, warn("plugins", tildePath(p.Path)+" never runs: 'devz "+group+" "+sub+"' is built in",
+						"remove or rename "+tildePath(p.Path)))
+				} else {
+					names = append(names, group+" "+sub)
+				}
+				continue
+			}
+		}
 		names = append(names, p.Name)
 	}
-	return ok("plugins", strings.Join(names, ", "))
+	if len(names) == 0 && len(out) == 0 {
+		return []result{ok("plugins", "none on PATH")}
+	}
+	if len(names) > 0 {
+		out = append([]result{ok("plugins", strings.Join(names, ", "))}, out...)
+	}
+	return out
+}
+
+// builtinSubcommand reports whether a group command compiles sub in, which is
+// what makes a plugin of that name unreachable.
+func builtinSubcommand(group, sub string) bool {
+	if group != "claude" {
+		return false
+	}
+	for _, b := range claudeBuiltins {
+		if b.name == sub {
+			return true
+		}
+	}
+	return false
+}
+
+// checkDeprecated reports which old command names were used in the last 30
+// days, from the log every use is written to. It is information, not a
+// problem: the old names work. Nothing listed for a release cycle is what
+// says a name can be removed.
+func checkDeprecated(now time.Time) result {
+	uses := cli.DeprecatedUses(now.AddDate(0, 0, -30))
+	if len(uses) == 0 {
+		return ok("devz:deprecated", "no old command names used in the last 30 days")
+	}
+	parts := make([]string, 0, len(uses))
+	for _, u := range uses {
+		parts = append(parts, fmt.Sprintf("'%s' x%d, last %s (now '%s')",
+			u.Old, u.Count, u.Last.Local().Format("2006-01-02"), u.Replacement))
+	}
+	return ok("devz:deprecated", "old names used in the last 30 days: "+strings.Join(parts, "; "))
 }
 
 // checkCompletion flags an installed completion script that a different devz

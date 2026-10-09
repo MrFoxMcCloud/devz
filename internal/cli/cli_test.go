@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"testing"
+	"time"
 )
 
 // isolate points devz at an empty config and a PATH holding only dir, so a
@@ -99,10 +101,10 @@ func TestDescribePlugin(t *testing.T) {
 	dir := isolate(t)
 	writePlugin(t, dir, "tunnel", "#!/usr/bin/env bash\n# devz: open the staging tunnel\necho hi\n")
 	writePlugin(t, dir, "bare", "#!/bin/sh\necho devz: not a comment\n")
-	if got := describePlugin(filepath.Join(dir, "devz-tunnel")); got != "open the staging tunnel" {
+	if got := DescribePlugin(filepath.Join(dir, "devz-tunnel")); got != "open the staging tunnel" {
 		t.Errorf("tunnel: %q", got)
 	}
-	if got := describePlugin(filepath.Join(dir, "devz-bare")); got != "" {
+	if got := DescribePlugin(filepath.Join(dir, "devz-bare")); got != "" {
 		t.Errorf("bare: %q, want empty", got)
 	}
 }
@@ -138,5 +140,74 @@ func TestDistance(t *testing.T) {
 		if got := distance(tt.a, tt.b); got != tt.want {
 			t.Errorf("distance(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
 		}
+	}
+}
+
+func TestExitErrorSetsTheExitCode(t *testing.T) {
+	isolate(t)
+	app := New("test", &Command{Name: "handoff", Run: func(*Context, []string) error { return ExitError{Code: 3} }})
+	if code := app.Run([]string{"handoff"}); code != 3 {
+		t.Errorf("exit %d, want the code the command asked for", code)
+	}
+}
+
+func TestDeprecatedCommandStillRunsAndIsLogged(t *testing.T) {
+	isolate(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	ran := 0
+	app := New("test",
+		&Command{Name: "old", Deprecated: "group new", Hidden: true, Run: func(*Context, []string) error { ran++; return nil }},
+		&Command{Name: "current", Run: func(*Context, []string) error { return nil }},
+	)
+	for range 2 {
+		if code := app.Run([]string{"old"}); code != 0 {
+			t.Fatalf("old name: exit %d", code)
+		}
+	}
+	app.Run([]string{"current"})
+	if ran != 2 {
+		t.Errorf("old name ran %d times, want 2", ran)
+	}
+
+	uses := DeprecatedUses(time.Now().Add(-time.Hour))
+	if len(uses) != 1 || uses[0].Old != "devz old" || uses[0].Replacement != "devz group new" || uses[0].Count != 2 {
+		t.Errorf("uses = %+v, want one entry for 'devz old' counted twice", uses)
+	}
+	if got := DeprecatedUses(time.Now().Add(time.Hour)); len(got) != 0 {
+		t.Errorf("uses after the window = %+v, want none", got)
+	}
+	if slices.Contains(app.Names(), "old") {
+		t.Errorf("a hidden command is offered for completion: %v", app.Names())
+	}
+}
+
+func TestDeprecatedLogThatCannotBeWrittenDoesNotFailTheCommand(t *testing.T) {
+	isolate(t)
+	// A file where the state directory should be: nothing can be created under it.
+	blocker := filepath.Join(t.TempDir(), "state")
+	if err := os.WriteFile(blocker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", blocker)
+	app := New("test", &Command{Name: "old", Deprecated: "new", Run: func(*Context, []string) error { return nil }})
+	if code := app.Run([]string{"old"}); code != 0 {
+		t.Errorf("exit %d, want 0", code)
+	}
+}
+
+func TestGroupPluginsAreListedUnderTheGroup(t *testing.T) {
+	dir := isolate(t)
+	writePlugin(t, dir, "grp-sync", "#!/bin/sh\n# devz: sync things\n")
+	writePlugin(t, dir, "tunnel", "#!/bin/sh\n")
+	app := New("test",
+		&Command{Name: "grp", Group: true, Run: func(*Context, []string) error { return nil }},
+	)
+	subs := GroupPlugins("grp")
+	if len(subs) != 1 || subs[0].Name != "sync" {
+		t.Errorf("GroupPlugins = %+v, want sync", subs)
+	}
+	names := app.Names()
+	if slices.Contains(names, "grp-sync") || !slices.Contains(names, "tunnel") || !slices.Contains(names, "grp") {
+		t.Errorf("Names = %v, want grp and tunnel but not grp-sync", names)
 	}
 }
