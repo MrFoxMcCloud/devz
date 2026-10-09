@@ -119,6 +119,8 @@ summary line. Notable checks:
 | `pass:backup` | a store with no git remote: one copy, one disk |
 | `claude:accounts` | which Claude accounts are logged in on this machine |
 | `claude:account` | a `.claude-account` marker that names an account nobody is logged into |
+| `claude:links` | an account whose settings, agents, commands or skills are a local copy and no longer the shared ones |
+| `claude:mcp` | an account whose MCP servers differ from the shared set |
 | `claude:launch` | VS Code or the shell starting Claude Code without applying the account rule, so every window or terminal lands on the default account |
 | `claude:memory` | a repo on a `claude.memory.hosts` forge whose Claude memory is not shared yet |
 | `claude:memory-guard` | a repo where Claude can still write company or org memory without being asked |
@@ -197,6 +199,8 @@ which account a repo uses, and the memory and plans the accounts share. Needs
 ```sh
 devz claude                  # the subcommands, built in and plugin
 devz claude account ...      # below
+devz claude sync ...         # below
+devz claude eject            # below
 devz claude exec ...         # below
 devz claude worktree ...     # below
 devz claude memory ...       # below
@@ -275,6 +279,52 @@ This is the launch path, for the two places Claude Code is started from:
 devz prints the function and does not edit your rc file. `devz doctor`
 (`claude:launch`) says whether both places apply the rule. `DEVZ_BIN` in the
 printed function points one shell at another devz build.
+
+### `devz claude sync`
+
+```sh
+devz claude sync [--dry-run]     # link the shared items into every account, copy the MCP servers
+devz claude sync status          # what is linked, what has drifted, who each dir is logged in as
+devz claude sync pull <account>  # take one account's state as the shared one, then push
+```
+
+Each Claude login has its own config dir, and so its own settings, agents,
+commands, skills and MCP servers. `sync` makes them one set. The copies live in
+`claude.sharedDir`; `settings.json`, `CLAUDE.md`, `agents`, `commands` and
+`skills` in each logged-in account's config dir become links to them. Logins,
+history and per-project state stay separate.
+
+MCP servers cannot be linked: Claude Code keeps them inside each account's
+`.claude.json`, beside the login. `sync` copies that one key from
+`<sharedDir>/mcp-servers.json`. It changes nothing else in the file, down to
+the bytes and the order of the other keys, saves the old file under
+`<sharedDir>/backups/<time>/`, and writes the new one atomically with mode
+0600. A state file that does not parse is left alone.
+
+A config dir holding a real file where a link should be is not overwritten
+blindly. Its content becomes the shared copy if the shared one is still empty,
+and is otherwise backed up before the link replaces it. Claude Code rewrites a
+settings file atomically, which is how a link turns back into a file; `devz
+doctor` (`claude:links`) notices, and running `sync` again repairs it.
+
+After adding an MCP server in one account, `devz claude sync pull <account>`
+makes it everyone's.
+
+### `devz claude eject`
+
+```sh
+devz claude eject           # the plan; changes nothing
+devz claude eject --apply   # replace every link with a copy
+```
+
+The way out. The setup is plain files, so leaving it is mostly knowing which
+ones, and this command is that list, kept beside the code that creates them.
+
+`--apply` gives each account its own copy of the shared settings, agents,
+commands and skills. It never edits your shell rc file or your editor's
+settings; it prints which lines to remove. It deletes nothing: the shared
+directory, the memory store and every `.claude-account` marker stay where they
+are. `devz claude sync` puts the links back.
 
 ### `devz claude worktree`
 

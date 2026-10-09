@@ -80,6 +80,13 @@ Run `make fmt vet test build` before calling a change done.
   that does not resolve is exit status 3 and nothing runs. Never fall back to
   the default account. The default account means CLAUDE_CONFIG_DIR *unset*,
   never set to `~/.claude`.
+- `claude sync` writes into each account's `.claude.json`, which is Claude
+  Code's own state and holds the login. It replaces one top-level key with
+  `setTopLevelKey` and must leave every other byte alone: never round-trip
+  that file through `map[string]any`, which reorders keys and rewrites
+  numbers. Keep the backup, the atomic rename and mode 0600.
+- `claude eject` is the documented way out and it is tested. When a new piece
+  of state is added outside the repo's own files, add it to the eject plan.
 - A command that hands off to another program returns `cli.ExitError` with
   the child's exit status, so the status survives and nothing is printed
   twice.
