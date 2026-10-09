@@ -57,9 +57,16 @@ type Claude struct {
 // every checkout and every account, split into company, org and repo layers.
 // Nothing is managed until Hosts names a forge.
 type Memory struct {
-	// Store holds the layers as <store>/<host>/<org>/... Empty means
-	// <sharedDir>/orgs, which every account on the machine already shares.
+	// Store holds the layers as <store>/<host>/<org>/<repo>/... Empty means
+	// <sharedDir>/hosts, which every account on the machine already shares.
 	Store string `json:"store,omitempty"`
+	// HostLayer names the hosts whose own directory is a shared layer: a
+	// CLAUDE.md and memory that load in every repo on the host. That fits a
+	// host that is one company, and not a public forge, where the host means
+	// nothing and the org is the widest thing repos have in common. When the
+	// key is absent, every configured host has the layer except the public
+	// forges in PublicForges.
+	HostLayer []string `json:"hostLayer"`
 	// Hosts are the git hosts whose repos get layered memory, matched against
 	// each repo's origin URL (e.g. "git.example.com"). Repos anywhere else
 	// keep Claude Code's default per-checkout memory.
@@ -74,7 +81,46 @@ func (c Claude) StoreDir() string {
 	if c.Memory.Store != "" {
 		return Expand(c.Memory.Store)
 	}
+	hosts := filepath.Join(Expand(c.SharedDir), "hosts")
+	// Before 1.7 the default was <sharedDir>/orgs. A store that is still there
+	// keeps working until `devz claude memory migrate` moves it.
+	if legacy := c.LegacyStoreDir(); !isDir(hosts) && isDir(legacy) {
+		return legacy
+	}
+	return hosts
+}
+
+// LegacyStoreDir is where the store lived by default before 1.7, when its
+// first level was misnamed for what it holds.
+func (c Claude) LegacyStoreDir() string {
 	return filepath.Join(Expand(c.SharedDir), "orgs")
+}
+
+// PublicForges are hosts that many unrelated owners share, so the host itself
+// is not a layer unless HostLayer says so.
+var PublicForges = []string{"github.com", "gitlab.com", "bitbucket.org", "codeberg.org"}
+
+// HasHostLayer reports whether host's own directory is a shared layer.
+func (m Memory) HasHostLayer(host string) bool {
+	if m.HostLayer != nil {
+		for _, h := range m.HostLayer {
+			if h == host {
+				return true
+			}
+		}
+		return false
+	}
+	for _, forge := range PublicForges {
+		if forge == host {
+			return false
+		}
+	}
+	return true
+}
+
+func isDir(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 // Doctor tunes the environment checks.

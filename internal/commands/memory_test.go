@@ -49,13 +49,13 @@ func TestMergeMemorySettingsKeepsOtherKeys(t *testing.T) {
 	if got["model"] != "opus" {
 		t.Errorf("model dropped: %v", got)
 	}
-	if got["autoMemoryDirectory"] != "/s/git.example.com/acme/repos/backend/memory" {
+	if got["autoMemoryDirectory"] != "/s/git.example.com/acme/backend/memory" {
 		t.Errorf("autoMemoryDirectory = %v", got["autoMemoryDirectory"])
 	}
 	perms := got["permissions"].(map[string]any)
 	allow := perms["allow"].([]any)
 	if len(allow) != 3 || allow[0] != "Bash(ls)" ||
-		allow[1] != "Edit(//s/git.example.com/acme/repos/backend/memory/**)" ||
+		allow[1] != "Edit(//s/git.example.com/acme/backend/memory/**)" ||
 		allow[2] != "Edit(//s/git.example.com/acme/plans/**)" {
 		t.Errorf("allow = %v", allow)
 	}
@@ -135,10 +135,10 @@ func TestMemoryInitLaysOutStoreAndIsIdempotent(t *testing.T) {
 		t.Fatalf("init: %v\n%s", err, out.String())
 	}
 
-	store := filepath.Join(home, "shared", "orgs", "git.example.com")
+	store := filepath.Join(home, "shared", "hosts", "git.example.com")
 	for _, p := range []string{
 		"CLAUDE.md", "memory/MEMORY.md", "acme/CLAUDE.md", "acme/memory/MEMORY.md",
-		"acme/plans", "acme/repos/backend/memory",
+		"acme/plans", "acme/backend/memory",
 	} {
 		if !exists(filepath.Join(store, p)) {
 			t.Errorf("missing %s", p)
@@ -146,7 +146,7 @@ func TestMemoryInitLaysOutStoreAndIsIdempotent(t *testing.T) {
 	}
 
 	orgClaude, _ := os.ReadFile(filepath.Join(store, "acme", "CLAUDE.md"))
-	if !strings.HasPrefix(string(orgClaude), "@~/shared/orgs/git.example.com/CLAUDE.md\n") ||
+	if !strings.HasPrefix(string(orgClaude), "@~/shared/hosts/git.example.com/CLAUDE.md\n") ||
 		!strings.Contains(string(orgClaude), "# hand written") {
 		t.Errorf("org CLAUDE.md was not adopted with imports:\n%s", orgClaude)
 	}
@@ -240,8 +240,8 @@ func TestMemoryNeverLinksIntoARoot(t *testing.T) {
 	}
 	if !memorySettingsCurrent(memoryLayout{
 		Top: top, Repo: "tool",
-		HostDir: filepath.Join(home, "shared", "orgs", "git.example.com"),
-		OrgDir:  filepath.Join(home, "shared", "orgs", "git.example.com", "acme"),
+		HostDir: filepath.Join(home, "shared", "hosts", "git.example.com"),
+		OrgDir:  filepath.Join(home, "shared", "hosts", "git.example.com", "acme"),
 	}) {
 		t.Error("flat checkout did not get its repo memory")
 	}
@@ -253,7 +253,7 @@ func TestMemoryAdoptsOverAnUntouchedSeed(t *testing.T) {
 	ctx := &cli.Context{Config: cfg, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
 
 	// An earlier checkout seeded the store before this one was seen.
-	store := filepath.Join(home, "shared", "orgs", "git.example.com", "acme")
+	store := filepath.Join(home, "shared", "hosts", "git.example.com", "acme")
 	l, err := resolveMemoryRepo(cfg, top)
 	if err != nil {
 		t.Fatal(err)
@@ -294,7 +294,7 @@ func TestMemoryAdoptsOverAnUntouchedSeed(t *testing.T) {
 // It is what the guard exists to replace, so a rerun has to take it out.
 func TestMergeMemorySettingsReplacesTheBroadAllow(t *testing.T) {
 	l := memoryLayout{Repo: "backend", HostDir: "/s/git.example.com", OrgDir: "/s/git.example.com/acme"}
-	in := []byte(`{"autoMemoryDirectory":"/s/git.example.com/acme/repos/backend/memory",
+	in := []byte(`{"autoMemoryDirectory":"/s/git.example.com/acme/backend/memory",
 		"plansDirectory":"/s/git.example.com/acme/plans",
 		"permissions":{"additionalDirectories":["/s/git.example.com"],
 		"allow":["Bash(ls)","Edit(//s/git.example.com/**)"]}}`)
@@ -423,7 +423,7 @@ func TestMemoryInALinkedWorktreeUsesTheMainCheckout(t *testing.T) {
 
 func TestMemoryInitAppendsTheBranchRuleOnce(t *testing.T) {
 	home, top, cfg := memoryEnv(t)
-	hostClaude := filepath.Join(home, "shared", "orgs", "git.example.com", "CLAUDE.md")
+	hostClaude := filepath.Join(home, "shared", "hosts", "git.example.com", "CLAUDE.md")
 	if err := os.MkdirAll(filepath.Dir(hostClaude), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -458,8 +458,8 @@ func TestMemoryPathAndList(t *testing.T) {
 	if err := runMemory(ctx, []string{"init", top}); err != nil {
 		t.Fatal(err)
 	}
-	store := filepath.Join(home, "shared", "orgs", "git.example.com")
-	for _, f := range []string{"memory/a.md", "memory/MEMORY.md", "acme/repos/backend/memory/b.md", "acme/repos/backend/memory/c.md"} {
+	store := filepath.Join(home, "shared", "hosts", "git.example.com")
+	for _, f := range []string{"memory/a.md", "memory/MEMORY.md", "acme/backend/memory/b.md", "acme/backend/memory/c.md"} {
 		if err := os.WriteFile(filepath.Join(store, f), nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -471,7 +471,7 @@ func TestMemoryPathAndList(t *testing.T) {
 	}
 	want := "host\t" + store + "/memory\n" +
 		"org\t" + store + "/acme/memory\n" +
-		"repo\t" + store + "/acme/repos/backend/memory\n" +
+		"repo\t" + store + "/acme/backend/memory\n" +
 		"plans\t" + store + "/acme/plans\n"
 	if out.String() != want {
 		t.Errorf("path for a checkout =\n%swant\n%s", out.String(), want)
@@ -482,7 +482,7 @@ func TestMemoryPathAndList(t *testing.T) {
 	if err := runMemory(ctx, []string{"path", "git.example.com/other/thing"}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "repo\t"+store+"/other/repos/thing/memory\n") {
+	if !strings.Contains(out.String(), "repo\t"+store+"/other/thing/memory\n") {
 		t.Errorf("path by name =\n%s", out.String())
 	}
 	out.Reset()
@@ -508,5 +508,293 @@ func TestMemoryPathAndList(t *testing.T) {
 		"git.example.com/acme/backend  2\n"
 	if out.String() != wantList {
 		t.Errorf("list =\n%swant\n%s", out.String(), wantList)
+	}
+}
+
+// checkoutAt makes a repo at dir whose origin is url.
+func checkoutAt(t *testing.T, dir, url string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init", "-q", dir},
+		{"-C", dir, "remote", "add", "origin", url},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
+
+func TestStoreMirrorsTheURLInLowerCase(t *testing.T) {
+	home, _, cfg := memoryEnv(t)
+	top := filepath.Join(home, "src", "acme", "Shouty")
+	checkoutAt(t, top, "https://git.example.com/ACME/Shouty.git")
+
+	l, err := resolveMemoryRepo(cfg, top)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, "shared", "hosts", "git.example.com", "acme", "shouty", "memory")
+	if l.repoMemory() != want {
+		t.Errorf("repo memory = %s, want %s", l.repoMemory(), want)
+	}
+	// The folder above the checkout is the org's whatever its capitals.
+	if !l.parentIsOrg() {
+		t.Error("src/acme should count as the org folder for origin ACME")
+	}
+}
+
+func TestReservedNamesHaveNoPlaceInTheStore(t *testing.T) {
+	home, _, cfg := memoryEnv(t)
+	for _, name := range []string{"plans", "Memory", "repos"} {
+		top := filepath.Join(home, "src", "acme", name)
+		checkoutAt(t, top, "https://git.example.com/acme/"+name+".git")
+		if _, err := resolveMemoryRepo(cfg, top); err == nil || !strings.Contains(err.Error(), "cannot have a place") {
+			t.Errorf("a repository named %s: err = %v", name, err)
+		}
+	}
+	if _, err := memoryLayoutFor(cfg, "git.example.com/memory/thing"); err == nil {
+		t.Error("an org named memory was accepted")
+	}
+}
+
+// On a public forge the host means nothing, so there is no host layer: the
+// org file is the widest shared one and carries the branch rule itself.
+func TestAHostWithoutAHostLayer(t *testing.T) {
+	home, _, cfg := memoryEnv(t)
+	cfg.Claude.Memory.Hosts = append(cfg.Claude.Memory.Hosts, "github.com")
+	top := filepath.Join(home, "src", "someone", "tool")
+	checkoutAt(t, top, "https://github.com/Someone/tool.git")
+
+	var out bytes.Buffer
+	ctx := &cli.Context{Config: cfg, Stdout: &out, Stderr: &out}
+	if err := runMemory(ctx, []string{"init", top}); err != nil {
+		t.Fatalf("init: %v\n%s", err, out.String())
+	}
+	host := filepath.Join(home, "shared", "hosts", "github.com")
+	if exists(filepath.Join(host, "CLAUDE.md")) || exists(filepath.Join(host, "memory")) {
+		t.Error("a host layer was created for a public forge")
+	}
+	org, _ := os.ReadFile(filepath.Join(host, "someone", "CLAUDE.md"))
+	if strings.Contains(string(org), "github.com/CLAUDE.md") {
+		t.Errorf("the org file imports a host file that does not exist:\n%s", org)
+	}
+	if !strings.Contains(string(org), branchRuleMarker) || !strings.Contains(string(org), "## Finding memory") {
+		t.Errorf("the org file should carry the branch rule and the layout:\n%s", org)
+	}
+	for _, r := range checkMemory(cfg, top) {
+		if r.status != statusOK {
+			t.Errorf("doctor: %+v", r)
+		}
+	}
+	out.Reset()
+	if err := runMemory(ctx, []string{"path", top}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "host\t") || !strings.Contains(out.String(), "repo\t"+host+"/someone/tool/memory\n") {
+		t.Errorf("path =\n%s", out.String())
+	}
+
+	// hostLayer, when set, is the whole answer: here it gives the forge a
+	// layer and takes the company host's away.
+	cfg.Claude.Memory.HostLayer = []string{"github.com"}
+	if l, _ := resolveMemoryRepo(cfg, top); !l.HostLayer {
+		t.Error("claude.memory.hostLayer did not turn the layer on")
+	}
+}
+
+// A checkout with no org folder above it gets the repo layer and nothing to
+// fix: status must not tell you to run init for ever.
+func TestAFlatCheckoutIsNotNagged(t *testing.T) {
+	home, _, cfg := memoryEnv(t)
+	cfg.Claude.Memory.Hosts = []string{"github.com"}
+	top := filepath.Join(home, "src", "tool")
+	checkoutAt(t, top, "https://github.com/someone/tool.git")
+	var out bytes.Buffer
+	ctx := &cli.Context{Config: cfg, Stdout: &out, Stderr: &out}
+	if err := runMemory(ctx, []string{"init", top}); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := runMemory(ctx, []string{"status", top}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); strings.Contains(got, "run: devz") || strings.Contains(got, "NOT") || !strings.Contains(got, "auto memory") {
+		t.Errorf("status for a flat checkout:\n%s", got)
+	}
+	var skipped bool
+	for _, r := range checkMemory(cfg, top) {
+		if r.status == statusWarn || r.status == statusFail {
+			t.Errorf("doctor: %+v", r)
+		}
+		skipped = skipped || (r.id == "claude:memory-rule" && r.status == statusSkip)
+	}
+	if !skipped {
+		t.Error("the rule check should be skipped where no shared file loads")
+	}
+}
+
+func TestMemoryMigrate(t *testing.T) {
+	home, top, cfg := memoryEnv(t)
+	shared := filepath.Join(home, "shared")
+	old := filepath.Join(shared, "orgs", "git.example.com")
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A store as 1.6 left it, one org in mixed case with no checkout here.
+	write(filepath.Join(old, "CLAUDE.md"), "# host\n"+branchRuleSection+"\n@~/shared/orgs/git.example.com/memory/MEMORY.md\n")
+	write(filepath.Join(old, "memory", "MEMORY.md"), "")
+	write(filepath.Join(old, "acme", "CLAUDE.md"),
+		"@~/shared/orgs/git.example.com/CLAUDE.md\n@~/shared/orgs/git.example.com/acme/memory/MEMORY.md\n\n# acme\n")
+	write(filepath.Join(old, "acme", "memory", "MEMORY.md"), "")
+	write(filepath.Join(old, "acme", "plans", "p.md"),
+		"see "+shared+"/orgs/git.example.com/acme/repos/backend/memory/a.md and ~/shared/orgs/git.example.com/acme/plans/\n")
+	write(filepath.Join(old, "acme", "repos", "backend", "memory", "a.md"), "a memory\n")
+	write(filepath.Join(old, "Mixed", "repos", "Thing", "memory", "b.md"), "b\n")
+	write(filepath.Join(old, "Mixed", "memory", "MEMORY.md"), "")
+	// The checkout's settings as 1.6 wrote them, plus a rule of the user's.
+	oldMem := filepath.Join(old, "acme", "repos", "backend", "memory")
+	write(filepath.Join(top, ".claude", "settings.local.json"), `{
+  "autoMemoryDirectory": "`+oldMem+`",
+  "plansDirectory": "`+filepath.Join(old, "acme", "plans")+`",
+  "permissions": {
+    "additionalDirectories": ["`+old+`"],
+    "allow": ["Bash(ls)", "Edit(~/shared/orgs/git.example.com/acme/repos/backend/memory/**)", "Edit(~/shared/orgs/git.example.com/acme/plans/**)"],
+    "ask": ["Edit(~/shared/orgs/git.example.com/memory/**)", "Edit(~/shared/orgs/git.example.com/*/CLAUDE.md)"]
+  }
+}`)
+	if err := os.Symlink(filepath.Join(old, "acme", "CLAUDE.md"), filepath.Join(home, "src", "acme", "CLAUDE.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	if !legacyStore(cfg) {
+		t.Fatal("a store at <sharedDir>/orgs should read as the old layout")
+	}
+	if rs := checkMemoryLayout(cfg); len(rs) != 1 || rs[0].status != statusWarn {
+		t.Errorf("doctor before: %+v", rs)
+	}
+	// Until it is migrated, the old layout keeps working where it is.
+	if l, _ := resolveMemoryRepo(cfg, top); l.repoMemory() != oldMem {
+		t.Errorf("before migrating, repo memory = %s, want the old path", l.repoMemory())
+	}
+
+	var out bytes.Buffer
+	ctx := &cli.Context{Config: cfg, Stdout: &out, Stderr: &out}
+	if err := runMemory(ctx, []string{"migrate", "--dry-run"}); err != nil {
+		t.Fatalf("dry run: %v\n%s", err, out.String())
+	}
+	if exists(filepath.Join(shared, "hosts")) || !exists(oldMem) {
+		t.Fatalf("the dry run moved something:\n%s", out.String())
+	}
+	for _, want := range []string{"would move", "git.example.com/Mixed/repos/Thing -> git.example.com/mixed/thing", "would rewrite old paths"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("dry run output lacks %q:\n%s", want, out.String())
+		}
+	}
+
+	out.Reset()
+	if err := runMemory(ctx, []string{"migrate"}); err != nil {
+		t.Fatalf("migrate: %v\n%s", err, out.String())
+	}
+	store := filepath.Join(shared, "hosts", "git.example.com")
+	for _, p := range []string{"acme/backend/memory/a.md", "mixed/thing/memory/b.md", "acme/plans/p.md", "CLAUDE.md"} {
+		if !exists(filepath.Join(store, p)) {
+			t.Errorf("missing after migrate: %s", p)
+		}
+	}
+	// Every old path still answers, for sessions that are running.
+	for _, p := range []string{oldMem + "/a.md", filepath.Join(old, "Mixed", "repos", "Thing", "memory", "b.md"), filepath.Join(old, "acme", "plans", "p.md")} {
+		if _, err := os.ReadFile(p); err != nil {
+			t.Errorf("old path no longer resolves: %s", p)
+		}
+	}
+	if legacyStore(cfg) {
+		t.Error("still reads as the old layout after migrating")
+	}
+
+	host, _ := os.ReadFile(filepath.Join(store, "CLAUDE.md"))
+	orgFile, _ := os.ReadFile(filepath.Join(store, "acme", "CLAUDE.md"))
+	plan, _ := os.ReadFile(filepath.Join(store, "acme", "plans", "p.md"))
+	for name, body := range map[string][]byte{"host": host, "org": orgFile, "plan": plan} {
+		if strings.Contains(string(body), "/orgs/") || strings.Contains(string(body), "/repos/") {
+			t.Errorf("%s file still spells out an old path:\n%s", name, body)
+		}
+	}
+	if !strings.Contains(string(plan), shared+"/hosts/git.example.com/acme/backend/memory/a.md") {
+		t.Errorf("plan = %s", plan)
+	}
+
+	settings, _ := os.ReadFile(filepath.Join(top, ".claude", "settings.local.json"))
+	if strings.Contains(string(settings), "/orgs/") || strings.Contains(string(settings), "/repos/") {
+		t.Errorf("settings still name old paths:\n%s", settings)
+	}
+	if !strings.Contains(string(settings), `"Bash(ls)"`) ||
+		!strings.Contains(string(settings), `"autoMemoryDirectory": "`+store+`/acme/backend/memory"`) {
+		t.Errorf("settings after migrate:\n%s", settings)
+	}
+	if target, _ := os.Readlink(filepath.Join(home, "src", "acme", "CLAUDE.md")); target != filepath.Join(store, "acme", "CLAUDE.md") {
+		t.Errorf("org link -> %s", target)
+	}
+	for _, r := range checkMemory(cfg, top) {
+		if r.status != statusOK {
+			t.Errorf("doctor for the checkout: %+v", r)
+		}
+	}
+	if rs := checkMemoryLayout(cfg); len(rs) != 1 || rs[0].status != statusOK || !strings.Contains(rs[0].detail, "4 old path(s)") {
+		t.Errorf("doctor after: %+v", rs)
+	}
+
+	// A second run finds nothing to do.
+	out.Reset()
+	if err := runMemory(ctx, []string{"migrate"}); err != nil || !strings.Contains(out.String(), "already has the current layout") {
+		t.Errorf("second migrate: %v\n%s", err, out.String())
+	}
+
+	out.Reset()
+	if err := runMemory(ctx, []string{"migrate", "--finish"}); err != nil {
+		t.Fatalf("finish: %v\n%s", err, out.String())
+	}
+	if exists(filepath.Join(shared, "orgs")) || exists(filepath.Join(store, "acme", "repos")) || exists(filepath.Join(store, "Mixed")) {
+		t.Errorf("links left after --finish:\n%s", out.String())
+	}
+	if !exists(filepath.Join(store, "acme", "backend", "memory", "a.md")) {
+		t.Error("--finish removed more than links")
+	}
+	if rs := checkMemoryLayout(cfg); len(rs) != 1 || strings.Contains(rs[0].detail, "old path") {
+		t.Errorf("doctor after finish: %+v", rs)
+	}
+}
+
+// --finish must not pull the links out from under a checkout that has not
+// been rewritten yet.
+func TestMemoryMigrateFinishWaitsForCheckouts(t *testing.T) {
+	home, top, cfg := memoryEnv(t)
+	old := filepath.Join(home, "shared", "orgs", "git.example.com", "acme", "repos", "backend", "memory")
+	if err := os.MkdirAll(old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	ctx := &cli.Context{Config: cfg, Stdout: &out, Stderr: &out}
+	if err := runMemory(ctx, []string{"migrate"}); err != nil {
+		t.Fatalf("migrate: %v\n%s", err, out.String())
+	}
+	// Someone puts the old settings back, as a restored backup would.
+	stale := `{"autoMemoryDirectory": "` + old + `", "plansDirectory": "x", "permissions": {"additionalDirectories": ["` +
+		filepath.Join(home, "shared", "orgs", "git.example.com") + `"]}}`
+	if err := os.WriteFile(filepath.Join(top, ".claude", "settings.local.json"), []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	err := runMemory(ctx, []string{"migrate", "--finish"})
+	if err == nil || !strings.Contains(out.String(), "still on old paths") {
+		t.Errorf("finish with a stale checkout: %v\n%s", err, out.String())
+	}
+	if !exists(filepath.Join(home, "shared", "orgs")) {
+		t.Error("the links were removed anyway")
 	}
 }

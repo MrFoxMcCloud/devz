@@ -122,7 +122,8 @@ summary line. Notable checks:
 | `claude:launch` | VS Code or the shell starting Claude Code without applying the account rule, so every window or terminal lands on the default account |
 | `claude:memory` | a repo on a `claude.memory.hosts` forge whose Claude memory is not shared yet |
 | `claude:memory-guard` | a repo where Claude can still write company or org memory without being asked |
-| `claude:memory-rule` | a host `CLAUDE.md` without the branch rule |
+| `claude:memory-rule` | a host `CLAUDE.md`, or the org's where the host has no layer, without the branch rule |
+| `claude:memory-layout` | a store still laid out as before 1.7, or, after migrating, how many old paths are still kept alive by links |
 | `claude:memory-backup`, `claude:shared-backup` | the memory store, or `claude.sharedDir`, not being a git repo of its own, having no remote, or holding uncommitted or unpushed changes. No network call: "pushed" is against the upstream as last fetched |
 | `gh:auth` | which GitHub account is actually active |
 | `devz:build` | a work-in-progress devz installed on PATH instead of a release |
@@ -281,6 +282,8 @@ devz claude memory init [DIR]               # set up the repo containing DIR (de
 devz claude memory init --all [--dry-run]   # every checkout under claude.memory.roots
 devz claude memory path [DIR | <host>/<org>[/<repo>]]   # where each layer lives
 devz claude memory list                     # every host, org and repo in the store
+devz claude memory migrate [--dry-run]      # move a pre-1.7 store to this layout
+devz claude memory migrate --finish         # then remove the links it left
 ```
 
 `path` prints `layer<TAB>directory` lines for the repo you are in, or for any
@@ -288,18 +291,51 @@ devz claude memory list                     # every host, org and repo in the st
 It is how a session finds another org's memory to read. `list` shows what the
 store holds, with a count of memories for each.
 
+**Migrating.** Before 1.7 the store was `<sharedDir>/orgs/<host>/<org>/repos/<repo>`,
+in the URL's own case. That layout keeps working until you move it:
+
+```sh
+devz claude memory migrate --dry-run   # what would move
+devz claude memory migrate             # move it, then update every checkout
+devz claude memory migrate --finish    # later: remove the compatibility links
+```
+
+`migrate` renames `orgs` to `hosts`, lifts each repo out of `repos/`,
+lower-cases names, rewrites paths spelled out in the store's Markdown files,
+and reruns `init --all`, which drops rules and directories that point at the
+old place. It leaves a link at every path it moves, because a Claude session
+that is already running read its settings at startup and still uses the old
+ones. `--finish` removes the links, and refuses while any checkout under
+`claude.memory.roots` still points through one. `devz doctor`
+(`claude:memory-layout`) shows where you are.
+
 Claude Code keys auto memory on the config dir *and* the checkout path, so two
-accounts and three clones of one repo make six separate memories. `devz memory`
-keys it on the repo's origin URL instead, and adds two shared layers above it:
+accounts and three clones of one repo make six separate memories. `devz claude
+memory` keys it on the repo's origin URL instead, and adds shared layers above
+it. The store mirrors the URL, in lower case:
 
 ```
-<store>/<host>/CLAUDE.md, memory/           company: every repo on the host
-<store>/<host>/<org>/CLAUDE.md, memory/     org: every repo in the org
-<store>/<host>/<org>/plans/                 plans, outside every repo
-<store>/<host>/<org>/repos/<repo>/memory/   repo: that repo's auto memory
+<store>/<host>/CLAUDE.md, memory/         host: every repo on the host
+<store>/<host>/<org>/CLAUDE.md, memory/   org: every repo in the org
+<store>/<host>/<org>/plans/               plans, outside every repo
+<store>/<host>/<org>/<repo>/memory/       repo: that repo's auto memory
 ```
 
-`<store>` is `claude.memory.store`, by default `<claude.sharedDir>/orgs`.
+`<store>` is `claude.memory.store`, by default `<claude.sharedDir>/hosts`.
+Lower case, because a forge treats `Acme/Tool` and `acme/tool` as one
+repository and two directories would be two memories. A repository named
+`memory`, `plans` or `repos` is refused: its directory would be the org's own.
+
+**The host layer** exists where the host is one company. On a public forge
+the host means nothing and the org is the widest thing repos share, so by
+default every configured host has the layer except github.com, gitlab.com,
+bitbucket.org and codeberg.org. `claude.memory.hostLayer`, when set, is the
+whole list instead. Without a host layer the org file carries the branch rule
+itself.
+
+**Scope stays per host.** A checkout can read its whole host directory, so a
+session can be asked to consult another org's memory there. Another host's
+memory is outside it, so reading that prompts.
 
 For one repo, `init`:
 
@@ -308,9 +344,10 @@ For one repo, `init`:
   and adds that file to your global git ignore;
 - links the org's `CLAUDE.md` and `plans/` into the directory above the repo,
   when the checkout sits at `<root>/<org>/<repo>`. Claude Code loads a parent
-  directory's `CLAUDE.md`, and the org one imports the org and company memory
-  indexes. So in `infra` you get company + org + infra memory, and never
-  `backend`'s;
+  directory's `CLAUDE.md`, and the org one imports the org and host memory
+  indexes. So in `infra` you get host + org + infra memory, and never
+  `backend`'s. A checkout with no org folder above it gets the repo layer
+  only, and nothing nags you about it;
 - creates missing store files from templates. A hand-written org `CLAUDE.md`
   already in the org folder is moved into the store and linked back;
 - appends the branch rule to the host `CLAUDE.md` when it is not there yet.

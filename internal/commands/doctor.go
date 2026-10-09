@@ -281,6 +281,7 @@ func checkClaude(cfg config.Config) []result {
 			out = append(out, checkGitBackup("claude:memory-backup", dir, store))
 		}
 	}
+	out = append(out, checkMemoryLayout(cfg)...)
 
 	known := claudeAccounts(cfg)
 	if len(known) == 0 {
@@ -305,6 +306,29 @@ func checkClaude(cfg config.Config) []result {
 	}
 	out = append(out, ok("claude:account", acct.Email))
 	return append(out, checkMemory(cfg, cwd)...)
+}
+
+// checkMemoryLayout says whether the store still has the layout from before
+// 1.7, and after a migration, how many old paths are still kept alive by
+// links. The second is information: the links are harmless until removed.
+func checkMemoryLayout(cfg config.Config) []result {
+	if len(cfg.Claude.Memory.Hosts) == 0 {
+		return nil
+	}
+	store := cfg.Claude.StoreDir()
+	if !exists(store) {
+		return nil
+	}
+	if legacyStore(cfg) {
+		return []result{warn("claude:memory-layout", tildePath(store)+" uses the layout from before 1.7",
+			"devz claude memory migrate --dry-run, then without --dry-run")}
+	}
+	if links := compatLinks(store, cfg.Claude.LegacyStoreDir()); len(links) > 0 {
+		return []result{ok("claude:memory-layout", fmt.Sprintf(
+			"%s; %d old path(s) still resolve through links ('devz claude memory migrate --finish' removes them)",
+			tildePath(store), len(links)))}
+	}
+	return []result{ok("claude:memory-layout", tildePath(store))}
 }
 
 // checkLaunch looks at the two places Claude Code is started from, since the
