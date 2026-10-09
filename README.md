@@ -123,7 +123,7 @@ summary line. Notable checks:
 | `claude:memory` | a repo on a `claude.memory.hosts` forge whose Claude memory is not shared yet |
 | `claude:memory-guard` | a repo where Claude can still write company or org memory without being asked |
 | `claude:memory-rule` | a host `CLAUDE.md`, or the org's where the host has no layer, without the branch rule |
-| `claude:memory-layout` | a store still laid out as before 1.7, or, after migrating, how many old paths are still kept alive by links |
+| `claude:memory-layout` | a store still laid out as before 1.7; after migrating, how many old paths are still kept alive by links; and the old path reappearing as a real directory, which means a session resumed with that path in its history wrote there |
 | `claude:memory-backup`, `claude:shared-backup` | the memory store, or `claude.sharedDir`, not being a git repo of its own, having no remote, or holding uncommitted or unpushed changes. No network call: "pushed" is against the upstream as last fetched |
 | `gh:auth` | which GitHub account is actually active |
 | `devz:build` | a work-in-progress devz installed on PATH instead of a release |
@@ -197,6 +197,8 @@ which account a repo uses, and the memory and plans the accounts share. Needs
 ```sh
 devz claude                  # the subcommands, built in and plugin
 devz claude account ...      # below
+devz claude exec ...         # below
+devz claude worktree ...     # below
 devz claude memory ...       # below
 devz claude <name> ...       # anything else: devz-claude-<name> on PATH
 ```
@@ -273,6 +275,34 @@ This is the launch path, for the two places Claude Code is started from:
 devz prints the function and does not edit your rc file. `devz doctor`
 (`claude:launch`) says whether both places apply the rule. `DEVZ_BIN` in the
 printed function points one shell at another devz build.
+
+### `devz claude worktree`
+
+```sh
+devz claude worktree add <branch> [<start-point>]   # .wt-<repo>-<topic> beside the main checkout
+devz claude worktree add --name spike --account personal idea/new-thing
+devz claude worktree list                           # each working tree, its branch and account
+devz claude worktree rm <topic|branch|path>         # the branch is kept
+```
+
+Several branches of one repository at once, without a second clone. Run it
+anywhere inside the repository.
+
+`add` checks out a branch that exists locally, tracks one that exists only on
+origin, and otherwise creates it from `<start-point>`, by default origin's
+default branch. A new branch tracks nothing, so its first push cannot aim at
+the branch it started from. The directory is named after the last part of the
+branch; `--name` picks another.
+
+A worktree needs no setup. It follows the repo's `.claude-account`, and Claude
+Code reads the main checkout's `.claude/settings.local.json` in every worktree,
+so memory and plans are already shared. `--account` puts one worktree on
+another account, which is how one repo is worked on two logins at once.
+
+It goes beside the main checkout because the folder above a checkout is where
+the org's `CLAUDE.md` is linked, so a sibling loads the same shared context.
+`rm` is `git worktree remove`: it refuses a worktree with uncommitted work
+unless you pass `--force`.
 
 ### `devz claude memory`
 

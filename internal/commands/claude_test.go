@@ -420,7 +420,7 @@ exit 0
 	}
 	// Built-ins first, then what is on PATH. The shadowed plugin is on PATH
 	// too; completing its name is harmless, since the built-in is what runs.
-	if got := strings.Join(completeClaude(ctx, nil), ","); got != "account,exec,memory,shell-init,account,sync" {
+	if got := strings.Join(completeClaude(ctx, nil), ","); got != "account,exec,memory,shell-init,worktree,account,sync" {
 		t.Errorf("completeClaude = %s", got)
 	}
 }
@@ -481,7 +481,7 @@ func TestCompleteAsksTheCommand(t *testing.T) {
 	}{
 		{[]string{"secrets", "map"}, "team/token"},
 		{[]string{"secrets", "exec"}, "TEAM_TOKEN"},
-		{[]string{"claude"}, "account,exec,memory,shell-init"},
+		{[]string{"claude"}, "account,exec,memory,shell-init,worktree"},
 		{[]string{"claude", "account"}, "show,set,pick,list,clear,resolve"},
 		{[]string{"claude", "account", "set"}, "me@personal.dev,personal,me@work.example,work"},
 		{[]string{"claude", "memory"}, "status,init,path,list,migrate"},
