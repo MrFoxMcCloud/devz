@@ -319,6 +319,16 @@ func checkMemoryLayout(cfg config.Config) []result {
 	if !exists(store) {
 		return nil
 	}
+	// After a migration the old default path should not exist at all. If it
+	// is back as a real directory, a session that was resumed with the old
+	// path in its history wrote there, outside the store.
+	if old := cfg.Claude.LegacyStoreDir(); old != store {
+		if info, err := os.Lstat(old); err == nil && info.IsDir() {
+			return []result{warn("claude:memory-layout",
+				tildePath(old)+" exists again: something wrote to a path the store has moved away from",
+				"move what is in it to the same place under "+tildePath(store)+" (without any repos/ level), then remove it")}
+		}
+	}
 	if legacyStore(cfg) {
 		return []result{warn("claude:memory-layout", tildePath(store)+" uses the layout from before 1.7",
 			"devz claude memory migrate --dry-run, then without --dry-run")}

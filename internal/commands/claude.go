@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/MrFoxMcCloud/devz/internal/cli"
@@ -15,6 +16,7 @@ var claudeBuiltins = []struct{ name, short string }{
 	{"exec", "run a command, normally Claude Code, as this repo's account"},
 	{"memory", "share Claude memory and plans per repo, org and host"},
 	{"shell-init", "print the claude function for a shell rc file"},
+	{"worktree", "work on several branches of a repo at once, on its account"},
 }
 
 // Claude groups everything devz does for Claude Code on a machine with more
@@ -35,8 +37,9 @@ func Claude() *cli.Command {
   exec         run a command, normally Claude Code, as this repo's account
   memory       share Claude memory and plans per repo, org and host
   shell-init   print the claude function for a shell rc file
+  worktree     work on several branches of a repo at once, on its account
 
-Run 'devz claude <subcommand> help' for account, exec or memory, and
+Run 'devz claude <subcommand> help' for account, exec, memory or worktree, and
 'devz claude' to list the plugins as well.
 
 A subcommand that is not built in is looked up as devz-claude-<name> on PATH,
@@ -64,6 +67,8 @@ func runClaude(ctx *cli.Context, args []string) error {
 		return runMemory(ctx, rest)
 	case "shell-init":
 		return runClaudeShellInit(ctx, rest)
+	case "worktree":
+		return runClaudeWorktree(ctx, rest)
 	case "help", "-h", "--help":
 		printClaudeOverview(ctx)
 		return nil
@@ -132,6 +137,23 @@ func completeClaude(ctx *cli.Context, args []string) []string {
 	case "exec":
 		if len(args) == 1 {
 			return []string{"--keep-env", "--"}
+		}
+	case "worktree":
+		switch {
+		case len(args) == 1:
+			return []string{"add", "list", "rm"}
+		case args[1] == "add":
+			return []string{"--name", "--account"}
+		case args[1] == "rm" && len(args) == 2:
+			var names []string
+			if main := mainCheckout("."); main != "" {
+				for _, info := range worktreeInfos(main) {
+					if info.Path != main {
+						names = append(names, filepath.Base(info.Path))
+					}
+				}
+			}
+			return names
 		}
 	}
 	return nil
