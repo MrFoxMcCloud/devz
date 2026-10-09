@@ -17,7 +17,7 @@ usage: devz <command> [args]
 commands:
   doctor      check this machine's development environment
   secrets     unlock and inspect the local secret store
-  account     show or set the Claude Code account for this repo
+  claude      Claude Code accounts and shared memory on this machine
   config      show or initialize this machine's devz config
   completion  emit a shell completion script (zsh|bash)
   version     print the devz version
@@ -43,10 +43,14 @@ devz completion zsh > ~/.local/share/zsh/site-functions/_devz   # any dir on $fp
 exec zsh
 ```
 
-Regenerate it after every upgrade: `go install` runs nothing once it has
-installed, so the file keeps the old subcommand lists. `devz doctor` warns when
-the installed script is not the one this build writes, and its fix line is the
-command to run.
+Or source it from `~/.zshrc`, after `compinit`, and there is no file to keep:
+`source <(devz completion zsh)`.
+
+The script holds no lists. It asks the binary for the candidates each time, so
+new commands, subcommands and plugins complete without regenerating it. When
+the script itself changes, `go install` cannot refresh an installed file, since
+it runs nothing once it has installed. `devz doctor` warns when the installed
+script is not the one this build writes, and its fix line is the command to run.
 
 ## First run
 
@@ -119,6 +123,8 @@ summary line. Notable checks:
 | `claude:memory-backup`, `claude:shared-backup` | the memory store, or `claude.sharedDir`, not being a git repo of its own, having no remote, or holding uncommitted or unpushed changes. No network call: "pushed" is against the upstream as last fetched |
 | `gh:auth` | which GitHub account is actually active |
 | `devz:build` | a work-in-progress devz installed on PATH instead of a release |
+| `devz:deprecated` | which old command names were used in the last 30 days, and how often. Information, not a problem: see [Old names](#old-names) |
+| `plugins` | the plugins on PATH, and any that can never run because a built-in command or subcommand has taken the name |
 | `completion:zsh`, `completion:bash` | an installed completion script that an older devz wrote. `go install` runs nothing after installing, so new subcommands do not complete until the file is regenerated; the fix line is the command |
 
 ### `devz secrets`
@@ -178,19 +184,58 @@ works.
 editor extensions — cannot show a passphrase prompt, so they fail at startup on
 a cold cache. Warming it once from a terminal is the fix.
 
-### `devz account`
+### `devz claude`
 
-Passthrough to `claude-account`, which owns the per-repo `.claude-account`
-marker. Not reimplemented — two implementations of one rule is how they drift.
-Needs `claude.enabled` in the config.
-
-### `devz memory`
+Everything devz does for Claude Code on a machine with more than one login:
+which account a repo uses, and the memory and plans the accounts share. Needs
+`claude.enabled` in the config.
 
 ```sh
-devz memory [status] [DIR]           # which layers this repo loads, and whether it is set up
-devz memory init [DIR]               # set up the repo containing DIR (default: here)
-devz memory init --all [--dry-run]   # every checkout under claude.memory.roots
+devz claude                  # the subcommands, built in and plugin
+devz claude account ...      # below
+devz claude memory ...       # below
+devz claude <name> ...       # anything else: devz-claude-<name> on PATH
 ```
+
+`claude` is a group. A subcommand it does not build in is looked up as
+`devz-claude-<name>`, the same way `devz <name>` finds `devz-<name>`, so a piece
+of the group can start as a script and be compiled in later under the same
+name. A built-in subcommand always wins.
+
+### `devz claude account`
+
+```sh
+devz claude account                       # which account this directory uses, and why
+devz claude account set <email|alias>     # set the repo's account
+devz claude account set <email> --root .  # in a worktree: that worktree alone
+devz claude account pick                  # choose from the accounts logged in here
+devz claude account list
+devz claude account clear                 # drop the marker that applies here
+```
+
+The account is a property of the repo: one `.claude-account` file at the root
+of the main checkout, followed by every linked worktree. A marker naming an
+account nobody is logged into is an error, exit status 3, never a quiet
+fallback to the default account.
+
+This runs `claude-account` from `claude.sharedDir`, which owns the marker rule,
+and keeps its exit status. It is not reimplemented: two implementations of one
+rule is how they drift.
+
+### `devz claude memory`
+
+```sh
+devz claude memory [status] [DIR]           # which layers this repo loads, and whether it is set up
+devz claude memory init [DIR]               # set up the repo containing DIR (default: here)
+devz claude memory init --all [--dry-run]   # every checkout under claude.memory.roots
+devz claude memory path [DIR | <host>/<org>[/<repo>]]   # where each layer lives
+devz claude memory list                     # every host, org and repo in the store
+```
+
+`path` prints `layer<TAB>directory` lines for the repo you are in, or for any
+`<host>/<org>` or `<host>/<org>/<repo>` whether or not it is checked out here.
+It is how a session finds another org's memory to read. `list` shows what the
+store holds, with a count of memories for each.
 
 Claude Code keys auto memory on the config dir *and* the checkout path, so two
 accounts and three clones of one repo make six separate memories. `devz memory`
@@ -269,6 +314,41 @@ experimental workflows live as scripts and are reachable the same way, so
 nobody's one-off has to become a pull request. Completion picks them up with no
 regeneration, because the completion script asks the binary for its command list
 at completion time.
+
+A plugin gets `DEVZ_VIA=1` in its environment, so a script that is also still
+callable by an older name can tell which way it was reached.
+
+**Group plugins.** A command marked as a group, such as `claude`, extends this
+one level down: `devz-claude-sync` on PATH is `devz claude sync`. It is listed
+and completed under the group, not at the top level.
+
+**A built-in always wins.** A plugin named like a built-in command or
+subcommand never runs. That is what happens when a script is compiled into
+devz and the script is left behind, so `devz doctor` (`plugins`) names any
+plugin in that position.
+
+## Old names
+
+A command that is renamed keeps its old name, because removing it would break
+whatever still calls it. Today:
+
+| Old | Now |
+|---|---|
+| `devz account` | `devz claude account` (the old name takes `claude-account`'s own arguments) |
+| `devz memory` | `devz claude memory` |
+| `devz secrets edit` | `devz secrets rotate` |
+
+The old names are left out of listings and completion, and behave exactly as
+before. Each use prints a one-line notice when stderr is a terminal, and
+appends a line to `$XDG_STATE_HOME/devz/deprecated.log` (by default
+`~/.local/state/devz/deprecated.log`): the time, the old name, the new name
+and the directory. The log is what catches a script or launcher that never
+shows the notice to anyone. `devz doctor` (`devz:deprecated`) reads it back.
+Nothing listed over a release cycle is the signal that a name can be removed,
+which is a major version.
+
+A script that devz is replacing can append the same tab-separated line when it
+is called directly, that is, without `DEVZ_VIA` set.
 
 ## Development
 

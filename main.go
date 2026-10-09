@@ -37,8 +37,9 @@ func resolveVersion() string {
 func main() {
 	app := cli.New(resolveVersion())
 	app.Register(
-		commands.Doctor(),
+		commands.Doctor(app),
 		commands.Secrets(),
+		commands.Claude(),
 		commands.Account(),
 		commands.Memory(),
 		commands.Config(),

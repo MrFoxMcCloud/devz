@@ -24,16 +24,35 @@ import (
 // (autoMemoryDirectory, plansDirectory); it does not manage memory contents.
 func Memory() *cli.Command {
 	return &cli.Command{
-		Name:  "memory",
-		Short: "share Claude memory and plans per repo, org and company",
-		Usage: `usage: devz memory [status] [DIR]
-       devz memory init [--dry-run] [DIR | --all]
+		Name:       "memory",
+		Short:      "share Claude memory and plans per repo, org and company",
+		Deprecated: "claude memory",
+		Hidden:     true,
+		Usage:      memoryUsage,
+		Run:        runMemory,
+		Complete:   completeMemory,
+	}
+}
+
+// memoryUsage is the help for `devz claude memory`, and for `devz memory`,
+// its older name.
+const memoryUsage = `usage: devz claude memory [status] [DIR]
+       devz claude memory init [--dry-run] [DIR | --all]
+       devz claude memory path [DIR | <host>/<org>[/<repo>]]
+       devz claude memory list
 
   status [DIR]  which store layers a repo loads, and whether it is set up
                 (the default)
   init [DIR]    set up the repo containing DIR (default: the current one)
   init --all    set up every checkout under claude.memory.roots
   --dry-run     print what init would change, and change nothing
+  path          where each layer's memory lives, as 'layer<TAB>directory'
+                lines: for the repo you are in, or for any <host>/<org> or
+                <host>/<org>/<repo>, checked out here or not
+  list          every host, org and repo that has a place in the store, with
+                how many memories each holds
+
+'devz memory' is the older name for this command and still works.
 
 Only repos whose origin is on a host in claude.memory.hosts are touched. The
 store, <claude.memory.store>/<host>/<org>/ (default <claude.sharedDir>/orgs),
@@ -61,10 +80,7 @@ Linked git worktrees need nothing. Claude Code reads the main checkout's
 .claude/settings.local.json in every worktree of a repo, so they share its
 memory and plans. Run from a worktree, status and init act on the main checkout.
 
-It is safe to run again, and never overwrites a file it did not create.`,
-		Run: runMemory,
-	}
-}
+It is safe to run again, and never overwrites a file it did not create.`
 
 // memoryIgnore is added to the global git excludes so the per-checkout
 // settings file never shows in git status.
@@ -75,8 +91,28 @@ func runMemory(ctx *cli.Context, args []string) error {
 		return fmt.Errorf("no hosts configured; add claude.memory.hosts to %s", mustConfigPath())
 	}
 	sub := "status"
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") && (args[0] == "status" || args[0] == "init") {
+	if len(args) > 0 && slices.Contains(memorySubcommands, args[0]) {
 		sub, args = args[0], args[1:]
+	}
+	switch sub {
+	case "help":
+		fmt.Fprintln(ctx.Stdout, memoryUsage)
+		return nil
+	case "list":
+		if len(args) > 0 {
+			return fmt.Errorf("list takes no arguments")
+		}
+		return memoryList(ctx)
+	case "path":
+		if len(args) > 1 {
+			return fmt.Errorf("path takes one DIR or <host>/<org>[/<repo>]")
+		}
+		l, err := memoryLayoutFor(ctx.Config, strings.Join(args, ""))
+		if err != nil {
+			return err
+		}
+		memoryPaths(ctx, l)
+		return nil
 	}
 
 	var dry, all bool
@@ -123,6 +159,116 @@ func runMemory(ctx *cli.Context, args []string) error {
 		}
 		return memoryInitAll(ctx, dry)
 	}
+}
+
+var memorySubcommands = []string{"status", "init", "path", "list", "help"}
+
+func completeMemory(_ *cli.Context, args []string) []string {
+	if len(args) == 0 {
+		return []string{"status", "init", "path", "list"}
+	}
+	if args[0] == "init" {
+		return []string{"--all", "--dry-run"}
+	}
+	return nil
+}
+
+// memoryLayoutFor resolves what `path` was given: a directory inside a repo,
+// or <host>/<org>[/<repo>] naming a place in the store. The second form is
+// what lets a session look up another org's memory without a checkout of it.
+func memoryLayoutFor(cfg config.Config, arg string) (memoryLayout, error) {
+	if arg == "" {
+		return resolveMemoryRepo(cfg, ".")
+	}
+	if exists(arg) {
+		return resolveMemoryRepo(cfg, arg)
+	}
+	parts := strings.Split(strings.Trim(arg, "/"), "/")
+	if len(parts) < 2 || len(parts) > 3 || slices.Contains(parts, "") || slices.Contains(parts, "..") {
+		return memoryLayout{}, fmt.Errorf("%s is neither a directory nor <host>/<org>[/<repo>]", arg)
+	}
+	host := strings.ToLower(parts[0])
+	if !slices.Contains(cfg.Claude.Memory.Hosts, host) {
+		return memoryLayout{}, fmt.Errorf("%s is not in claude.memory.hosts: %w", host, errNotManaged)
+	}
+	store := cfg.Claude.StoreDir()
+	l := memoryLayout{
+		Host: host, Org: parts[1], Roots: expandedRoots(cfg),
+		HostDir: filepath.Join(store, host),
+		OrgDir:  filepath.Join(store, host, parts[1]),
+	}
+	if len(parts) == 3 {
+		l.Repo = parts[2]
+	}
+	return l, nil
+}
+
+// memoryPaths prints one layer per line, tab-separated, so the output can be
+// read by a person or cut by a script.
+func memoryPaths(ctx *cli.Context, l memoryLayout) {
+	fmt.Fprintf(ctx.Stdout, "host\t%s\n", filepath.Join(l.HostDir, "memory"))
+	fmt.Fprintf(ctx.Stdout, "org\t%s\n", filepath.Join(l.OrgDir, "memory"))
+	if l.Repo != "" {
+		fmt.Fprintf(ctx.Stdout, "repo\t%s\n", l.repoMemory())
+	}
+	fmt.Fprintf(ctx.Stdout, "plans\t%s\n", l.plans())
+}
+
+// memoryList walks the store and prints every place that can hold memories.
+func memoryList(ctx *cli.Context) error {
+	store := ctx.Config.Claude.StoreDir()
+	type row struct {
+		name  string
+		count int
+	}
+	var rows []row
+	for _, host := range ctx.Config.Claude.Memory.Hosts {
+		hostDir := filepath.Join(store, host)
+		if !exists(hostDir) {
+			continue
+		}
+		rows = append(rows, row{host, countMemories(filepath.Join(hostDir, "memory"))})
+		orgs, _ := os.ReadDir(hostDir)
+		for _, org := range orgs {
+			// The host's own memory directory sits beside the orgs.
+			if !org.IsDir() || org.Name() == "memory" || strings.HasPrefix(org.Name(), ".") {
+				continue
+			}
+			orgDir := filepath.Join(hostDir, org.Name())
+			rows = append(rows, row{host + "/" + org.Name(), countMemories(filepath.Join(orgDir, "memory"))})
+			repos, _ := os.ReadDir(filepath.Join(orgDir, "repos"))
+			for _, repo := range repos {
+				if repo.IsDir() {
+					rows = append(rows, row{host + "/" + org.Name() + "/" + repo.Name(),
+						countMemories(filepath.Join(orgDir, "repos", repo.Name(), "memory"))})
+				}
+			}
+		}
+	}
+	if len(rows) == 0 {
+		return fmt.Errorf("nothing in %s yet; run 'devz claude memory init' in a repo", tildePath(store))
+	}
+	width := 0
+	for _, r := range rows {
+		width = max(width, len(r.name))
+	}
+	for _, r := range rows {
+		fmt.Fprintf(ctx.Stdout, "%-*s  %d\n", width, r.name, r.count)
+	}
+	return nil
+}
+
+// countMemories counts the memory files in a directory: every .md except the
+// index.
+func countMemories(dir string) int {
+	entries, _ := os.ReadDir(dir)
+	n := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") && e.Name() != "MEMORY.md" {
+			n++
+		}
+	}
+	return n
 }
 
 // memoryLayout is where one repo's layers live.
@@ -503,7 +649,7 @@ func memoryStatus(ctx *cli.Context, l memoryLayout) {
 	fmt.Fprintf(ctx.Stdout, "  %-8s %s\n", "guard", guardHow)
 
 	if !memorySettingsCurrent(l) || !strings.HasPrefix(orgHow, "loads") {
-		fmt.Fprintf(ctx.Stdout, "\nrun: devz memory init %s\n", l.Top)
+		fmt.Fprintf(ctx.Stdout, "\nrun: devz claude memory init %s\n", l.Top)
 	}
 }
 
@@ -525,7 +671,7 @@ func checkMemory(cfg config.Config, cwd string) []result {
 func memoryResults(l memoryLayout) []result {
 	shared, guarded := memorySettingsState(l)
 	if !shared {
-		return []result{warn("claude:memory", "this repo's memory is not shared", "devz memory init")}
+		return []result{warn("claude:memory", "this repo's memory is not shared", "devz claude memory init")}
 	}
 	name := l.Host + "/" + l.Org + "/" + l.Repo
 	if l.Worktree != "" {
@@ -537,14 +683,14 @@ func memoryResults(l memoryLayout) []result {
 		out = append(out, ok("claude:memory-guard", "writes to company and org memory prompt first"))
 	} else {
 		out = append(out, warn("claude:memory-guard",
-			"company and org memory can be written without a prompt", "devz memory init"))
+			"company and org memory can be written without a prompt", "devz claude memory init"))
 	}
 
 	if host, err := os.ReadFile(l.hostClaude()); err == nil && bytes.Contains(host, []byte(branchRuleMarker)) {
 		out = append(out, ok("claude:memory-rule", "branch rule is in "+tildePath(l.hostClaude())))
 	} else {
 		out = append(out, warn("claude:memory-rule",
-			"the branch rule is missing from "+tildePath(l.hostClaude()), "devz memory init"))
+			"the branch rule is missing from "+tildePath(l.hostClaude()), "devz claude memory init"))
 	}
 	return out
 }
@@ -813,7 +959,7 @@ func hostClaudeTemplate(l memoryLayout) string {
 	return fmt.Sprintf(`# %[1]s
 
 Shared context for every repository on %[1]s, loaded through each org's
-CLAUDE.md. Created by `+"`devz memory init`"+`; edit it freely.
+CLAUDE.md. Created by `+"`devz claude memory init`"+`; edit it freely.
 
 ## Memory layers
 

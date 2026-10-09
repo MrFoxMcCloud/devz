@@ -450,3 +450,63 @@ func TestMemoryInitAppendsTheBranchRuleOnce(t *testing.T) {
 		t.Errorf("init reported the append %d times, want 1:\n%s", n, out.String())
 	}
 }
+
+func TestMemoryPathAndList(t *testing.T) {
+	home, top, cfg := memoryEnv(t)
+	var out bytes.Buffer
+	ctx := &cli.Context{Config: cfg, Stdout: &out, Stderr: &out}
+	if err := runMemory(ctx, []string{"init", top}); err != nil {
+		t.Fatal(err)
+	}
+	store := filepath.Join(home, "shared", "orgs", "git.example.com")
+	for _, f := range []string{"memory/a.md", "memory/MEMORY.md", "acme/repos/backend/memory/b.md", "acme/repos/backend/memory/c.md"} {
+		if err := os.WriteFile(filepath.Join(store, f), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out.Reset()
+	if err := runMemory(ctx, []string{"path", top}); err != nil {
+		t.Fatal(err)
+	}
+	want := "host\t" + store + "/memory\n" +
+		"org\t" + store + "/acme/memory\n" +
+		"repo\t" + store + "/acme/repos/backend/memory\n" +
+		"plans\t" + store + "/acme/plans\n"
+	if out.String() != want {
+		t.Errorf("path for a checkout =\n%swant\n%s", out.String(), want)
+	}
+
+	// A repo that is not checked out here, and an org on its own.
+	out.Reset()
+	if err := runMemory(ctx, []string{"path", "git.example.com/other/thing"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "repo\t"+store+"/other/repos/thing/memory\n") {
+		t.Errorf("path by name =\n%s", out.String())
+	}
+	out.Reset()
+	if err := runMemory(ctx, []string{"path", "git.example.com/acme"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "repo\t") || !strings.Contains(out.String(), "plans\t"+store+"/acme/plans\n") {
+		t.Errorf("path for an org =\n%s", out.String())
+	}
+
+	for _, bad := range []string{"github.com/someone/else", "git.example.com", "git.example.com/a/b/c", "git.example.com/../x"} {
+		if err := runMemory(ctx, []string{"path", bad}); err == nil {
+			t.Errorf("path %q was accepted", bad)
+		}
+	}
+
+	out.Reset()
+	if err := runMemory(ctx, []string{"list"}); err != nil {
+		t.Fatal(err)
+	}
+	wantList := "git.example.com               1\n" +
+		"git.example.com/acme          0\n" +
+		"git.example.com/acme/backend  2\n"
+	if out.String() != wantList {
+		t.Errorf("list =\n%swant\n%s", out.String(), wantList)
+	}
+}

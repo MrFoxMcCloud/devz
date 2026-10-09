@@ -25,7 +25,8 @@ func Config() *cli.Command {
 devz ships behavior; the config holds anything that differs between machines --
 paths, key ids, which checks apply. That split is what lets one build work for
 the whole team.`,
-		Run: runConfig,
+		Run:      runConfig,
+		Complete: func(*cli.Context, []string) []string { return []string{"show", "path", "init", "edit"} },
 	}
 }
 

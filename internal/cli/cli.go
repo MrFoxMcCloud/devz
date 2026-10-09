@@ -5,6 +5,11 @@
 // are compiled in; anything personal stays a script named devz-<something> on
 // PATH and is reachable the same way, so nobody's one-off workflow has to
 // become a pull request.
+//
+// A command marked Group extends the same fallback one level down: a
+// subcommand it does not build in is looked up as devz-<group>-<sub>. That is
+// how a piece of a group can start life as a script and be compiled in later
+// without anyone typing a different name.
 package cli
 
 import (
@@ -33,7 +38,27 @@ type Command struct {
 	Usage string
 	// Run receives the arguments after the command name.
 	Run func(ctx *Context, args []string) error
+	// Complete returns the candidates for the next word, given the words
+	// already typed after the command name. The completion scripts ask for it
+	// at completion time, so they hold no subcommand lists of their own.
+	Complete func(ctx *Context, args []string) []string
+	// Group marks a command whose unknown subcommands fall through to
+	// devz-<name>-<sub> plugins on PATH.
+	Group bool
+	// Deprecated names the command that replaces this one, without the
+	// leading "devz". The old name runs exactly as before; each use is noted
+	// so `devz doctor` can say when nothing calls it any more.
+	Deprecated string
+	// Hidden keeps a command out of listings and completion. It still runs.
+	Hidden bool
 }
+
+// ExitError makes a command exit with Code and print nothing further. It is
+// for a command that hands off to another program, whose exit status is the
+// answer and whose own output already explained it.
+type ExitError struct{ Code int }
+
+func (e ExitError) Error() string { return fmt.Sprintf("exit status %d", e.Code) }
 
 // Context is what a command is handed.
 type Context struct {
@@ -60,6 +85,9 @@ func New(version string, cmds ...*Command) *App {
 func (a *App) Register(cmds ...*Command) {
 	a.commands = append(a.commands, cmds...)
 }
+
+// Command returns the built-in command with that name, or nil.
+func (a *App) Command(name string) *Command { return a.lookup(name) }
 
 func (a *App) lookup(name string) *Command {
 	for _, c := range a.commands {
@@ -100,7 +128,14 @@ func (a *App) Run(args []string) int {
 	}
 
 	if cmd := a.lookup(name); cmd != nil {
+		if cmd.Deprecated != "" {
+			NoteDeprecated(ctx, "devz "+name, "devz "+cmd.Deprecated)
+		}
 		if err := cmd.Run(ctx, rest); err != nil {
+			var exit ExitError
+			if errors.As(err, &exit) {
+				return exit.Code
+			}
 			if !errors.Is(err, ErrSilent) {
 				fmt.Fprintf(ctx.Stderr, "devz %s: %v\n", name, err)
 			}
@@ -111,7 +146,7 @@ func (a *App) Run(args []string) int {
 
 	// Not built in: try a devz-<name> plugin on PATH.
 	if path, err := exec.LookPath("devz-" + name); err == nil {
-		return runPlugin(path, rest)
+		return RunPlugin(path, rest)
 	}
 
 	fmt.Fprintf(ctx.Stderr, "devz: unknown command %q\n", name)
@@ -122,9 +157,14 @@ func (a *App) Run(args []string) int {
 	return 127
 }
 
-func runPlugin(path string, args []string) int {
+// RunPlugin runs a plugin with the terminal attached and returns its exit
+// code. DEVZ_VIA=1 in its environment says it was reached through devz, which
+// is how a script devz is replacing tells that from being called by its old
+// name.
+func RunPlugin(path string, args []string) int {
 	cmd := exec.Command(path, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	cmd.Env = append(os.Environ(), "DEVZ_VIA=1")
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if ok := asExitError(err, &exitErr); ok {
@@ -176,6 +216,36 @@ func Plugins() []Plugin {
 	return out
 }
 
+// GroupPlugins lists the plugins that extend a group command: devz-<group>-*
+// on PATH, named by what follows the group.
+func GroupPlugins(group string) []Plugin {
+	var out []Plugin
+	for _, p := range Plugins() {
+		if sub, ok := strings.CutPrefix(p.Name, group+"-"); ok && sub != "" {
+			out = append(out, Plugin{Name: sub, Path: p.Path})
+		}
+	}
+	return out
+}
+
+// topLevelPlugins leaves out the plugins that belong to a group command:
+// those are listed and completed under the group.
+func (a *App) topLevelPlugins() []Plugin {
+	var out []Plugin
+	for _, p := range Plugins() {
+		grouped := false
+		for _, c := range a.commands {
+			if c.Group && strings.HasPrefix(p.Name, c.Name+"-") {
+				grouped = true
+			}
+		}
+		if !grouped {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func executable(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
@@ -188,9 +258,11 @@ func executable(path string) bool {
 func (a *App) Names() []string {
 	var out []string
 	for _, c := range a.commands {
-		out = append(out, c.Name)
+		if !c.Hidden {
+			out = append(out, c.Name)
+		}
 	}
-	for _, p := range Plugins() {
+	for _, p := range a.topLevelPlugins() {
 		out = append(out, p.Name)
 	}
 	out = append(out, "help")
@@ -205,32 +277,34 @@ func (a *App) printOverview(ctx *Context) {
 	fmt.Fprintln(w, "commands:")
 	width := 0
 	for _, c := range a.commands {
-		if len(c.Name) > width {
+		if !c.Hidden && len(c.Name) > width {
 			width = len(c.Name)
 		}
 	}
-	plugins := Plugins()
+	plugins := a.topLevelPlugins()
 	for _, p := range plugins {
 		if len(p.Name) > width {
 			width = len(p.Name)
 		}
 	}
 	for _, c := range a.commands {
-		fmt.Fprintf(w, "  %-*s  %s\n", width, c.Name, c.Short)
+		if !c.Hidden {
+			fmt.Fprintf(w, "  %-*s  %s\n", width, c.Name, c.Short)
+		}
 	}
 	if len(plugins) > 0 {
 		fmt.Fprintln(w, "\nplugins (devz-* on PATH):")
 		for _, p := range plugins {
-			fmt.Fprintf(w, "  %-*s  %s\n", width, p.Name, describePlugin(p.Path))
+			fmt.Fprintf(w, "  %-*s  %s\n", width, p.Name, DescribePlugin(p.Path))
 		}
 	}
 	fmt.Fprintln(w, "\nrun 'devz help <command>' for detail, or 'devz doctor' to check this machine.")
 }
 
-// describePlugin reads a plugin's one-line description from a `# devz: ...`
+// DescribePlugin reads a plugin's one-line description from a `# devz: ...`
 // comment in its first few lines, so plugins can describe themselves in the
 // listing without devz having to execute them.
-func describePlugin(path string) string {
+func DescribePlugin(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
@@ -261,7 +335,7 @@ func (a *App) help(ctx *Context, args []string) int {
 	}
 	if path, err := exec.LookPath("devz-" + name); err == nil {
 		// Plugins own their help; ask them for it.
-		return runPlugin(path, []string{"--help"})
+		return RunPlugin(path, []string{"--help"})
 	}
 	fmt.Fprintf(ctx.Stderr, "devz: unknown command %q\n", name)
 	return 127

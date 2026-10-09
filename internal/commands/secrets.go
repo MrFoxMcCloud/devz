@@ -73,8 +73,24 @@ the secret:
 Why unlock exists: processes spawned without a TTY -- MCP servers, editor
 extensions -- cannot show a passphrase prompt, so they fail at startup if the
 agent cache is cold. Warming it from a terminal once is the fix.`,
-		Run: runSecrets,
+		Run:      runSecrets,
+		Complete: completeSecrets,
 	}
+}
+
+func completeSecrets(ctx *cli.Context, args []string) []string {
+	if len(args) == 0 {
+		return []string{"unlock", "status", "list", "show", "rotate", "add", "map", "env", "exec", "cached"}
+	}
+	if len(args) == 1 {
+		switch args[0] {
+		case "show", "rotate", "edit", "map":
+			return ctx.Config.Secrets.Entries
+		case "env", "exec":
+			return slices.Sorted(maps.Values(ctx.Config.Secrets.EnvVars))
+		}
+	}
+	return nil
 }
 
 func runSecrets(ctx *cli.Context, args []string) error {
@@ -116,9 +132,12 @@ func runSecrets(ctx *cli.Context, args []string) error {
 			return fmt.Errorf("%s needs an entry name", args[0])
 		}
 		verb := args[0]
-		if verb == "rotate" {
+		switch verb {
+		case "rotate":
 			// pass has no rotate; its edit is how a value is changed.
 			verb = "edit"
+		case "edit":
+			cli.NoteDeprecated(ctx, "devz secrets edit", "devz secrets rotate")
 		}
 		return passthrough(cfg, verb, args[1])
 	case "add":
