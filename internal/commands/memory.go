@@ -40,6 +40,7 @@ const memoryUsage = `usage: devz claude memory [status] [DIR]
        devz claude memory init [--dry-run] [DIR | --all]
        devz claude memory path [DIR | <host>/<org>[/<repo>]]
        devz claude memory list
+       devz claude memory migrate [--dry-run | --finish]
 
   status [DIR]  which store layers a repo loads, and whether it is set up
                 (the default)
@@ -52,16 +53,24 @@ const memoryUsage = `usage: devz claude memory [status] [DIR]
   list          every host, org and repo that has a place in the store, with
                 how many memories each holds
 
+  migrate       move a store laid out before 1.7 to the current layout.
+                Old paths keep resolving through links afterwards; --finish
+                removes those once nothing uses them
+
 'devz memory' is the older name for this command and still works.
 
 Only repos whose origin is on a host in claude.memory.hosts are touched. The
-store, <claude.memory.store>/<host>/<org>/ (default <claude.sharedDir>/orgs),
-holds three layers:
+store mirrors the repo's URL, <claude.memory.store>/<host>/<org>/<repo>/
+(default <claude.sharedDir>/hosts), in lower case, and holds three layers:
 
-  <host>/CLAUDE.md, memory/             company: every repo on the host
-  <host>/<org>/CLAUDE.md, memory/       org: every repo in the org
-  <host>/<org>/plans/                   plans for the org, not in any repo
-  <host>/<org>/repos/<repo>/memory/     repo: that repo's auto memory
+  <host>/CLAUDE.md, memory/         host: every repo on the host, where the
+                                    host is one company (claude.memory.hostLayer)
+  <host>/<org>/CLAUDE.md, memory/   org: every repo in the org
+  <host>/<org>/plans/               plans for the org, not in any repo
+  <host>/<org>/<repo>/memory/       repo: that repo's auto memory
+
+A repo cannot be named memory, plans or repos: its directory would be the
+org's own.
 
 init, for one repo:
   - writes .claude/settings.local.json: autoMemoryDirectory (the repo layer),
@@ -103,6 +112,8 @@ func runMemory(ctx *cli.Context, args []string) error {
 			return fmt.Errorf("list takes no arguments")
 		}
 		return memoryList(ctx)
+	case "migrate":
+		return memoryMigrate(ctx, args)
 	case "path":
 		if len(args) > 1 {
 			return fmt.Errorf("path takes one DIR or <host>/<org>[/<repo>]")
@@ -161,14 +172,17 @@ func runMemory(ctx *cli.Context, args []string) error {
 	}
 }
 
-var memorySubcommands = []string{"status", "init", "path", "list", "help"}
+var memorySubcommands = []string{"status", "init", "path", "list", "migrate", "help"}
 
 func completeMemory(_ *cli.Context, args []string) []string {
 	if len(args) == 0 {
-		return []string{"status", "init", "path", "list"}
+		return []string{"status", "init", "path", "list", "migrate"}
 	}
-	if args[0] == "init" {
+	switch args[0] {
+	case "init":
 		return []string{"--all", "--dry-run"}
+	case "migrate":
+		return []string{"--dry-run", "--finish"}
 	}
 	return nil
 }
@@ -191,22 +205,19 @@ func memoryLayoutFor(cfg config.Config, arg string) (memoryLayout, error) {
 	if !slices.Contains(cfg.Claude.Memory.Hosts, host) {
 		return memoryLayout{}, fmt.Errorf("%s is not in claude.memory.hosts: %w", host, errNotManaged)
 	}
-	store := cfg.Claude.StoreDir()
-	l := memoryLayout{
-		Host: host, Org: parts[1], Roots: expandedRoots(cfg),
-		HostDir: filepath.Join(store, host),
-		OrgDir:  filepath.Join(store, host, parts[1]),
-	}
+	repo := ""
 	if len(parts) == 3 {
-		l.Repo = parts[2]
+		repo = parts[2]
 	}
-	return l, nil
+	return newMemoryLayout(cfg, "", host, parts[1], repo)
 }
 
 // memoryPaths prints one layer per line, tab-separated, so the output can be
 // read by a person or cut by a script.
 func memoryPaths(ctx *cli.Context, l memoryLayout) {
-	fmt.Fprintf(ctx.Stdout, "host\t%s\n", filepath.Join(l.HostDir, "memory"))
+	if l.HostLayer {
+		fmt.Fprintf(ctx.Stdout, "host\t%s\n", filepath.Join(l.HostDir, "memory"))
+	}
 	fmt.Fprintf(ctx.Stdout, "org\t%s\n", filepath.Join(l.OrgDir, "memory"))
 	if l.Repo != "" {
 		fmt.Fprintf(ctx.Stdout, "repo\t%s\n", l.repoMemory())
@@ -216,32 +227,39 @@ func memoryPaths(ctx *cli.Context, l memoryLayout) {
 
 // memoryList walks the store and prints every place that can hold memories.
 func memoryList(ctx *cli.Context) error {
-	store := ctx.Config.Claude.StoreDir()
+	cfg := ctx.Config
+	store := cfg.Claude.StoreDir()
+	legacy := legacyStore(cfg)
 	type row struct {
 		name  string
 		count int
 	}
 	var rows []row
-	for _, host := range ctx.Config.Claude.Memory.Hosts {
+	for _, host := range cfg.Claude.Memory.Hosts {
 		hostDir := filepath.Join(store, host)
 		if !exists(hostDir) {
 			continue
 		}
-		rows = append(rows, row{host, countMemories(filepath.Join(hostDir, "memory"))})
-		orgs, _ := os.ReadDir(hostDir)
-		for _, org := range orgs {
+		if cfg.Claude.Memory.HasHostLayer(host) {
+			rows = append(rows, row{host, countMemories(filepath.Join(hostDir, "memory"))})
+		}
+		for _, org := range realDirs(hostDir) {
 			// The host's own memory directory sits beside the orgs.
-			if !org.IsDir() || org.Name() == "memory" || strings.HasPrefix(org.Name(), ".") {
+			if org == "memory" {
 				continue
 			}
-			orgDir := filepath.Join(hostDir, org.Name())
-			rows = append(rows, row{host + "/" + org.Name(), countMemories(filepath.Join(orgDir, "memory"))})
-			repos, _ := os.ReadDir(filepath.Join(orgDir, "repos"))
-			for _, repo := range repos {
-				if repo.IsDir() {
-					rows = append(rows, row{host + "/" + org.Name() + "/" + repo.Name(),
-						countMemories(filepath.Join(orgDir, "repos", repo.Name(), "memory"))})
+			orgDir := filepath.Join(hostDir, org)
+			rows = append(rows, row{host + "/" + org, countMemories(filepath.Join(orgDir, "memory"))})
+			repoParent := orgDir
+			if legacy {
+				repoParent = filepath.Join(orgDir, "repos")
+			}
+			for _, repo := range realDirs(repoParent) {
+				if !legacy && slices.Contains(reservedRepoNames, repo) {
+					continue
 				}
+				rows = append(rows, row{host + "/" + org + "/" + repo,
+					countMemories(filepath.Join(repoParent, repo, "memory"))})
 			}
 		}
 	}
@@ -256,6 +274,20 @@ func memoryList(ctx *cli.Context) error {
 		fmt.Fprintf(ctx.Stdout, "%-*s  %d\n", width, r.name, r.count)
 	}
 	return nil
+}
+
+// realDirs lists the directories in dir that are not hidden and not links.
+// The links left by a migration point at directories listed in their own
+// right, so following them would count everything twice.
+func realDirs(dir string) []string {
+	entries, _ := os.ReadDir(dir)
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
+			out = append(out, e.Name())
+		}
+	}
+	return out
 }
 
 // countMemories counts the memory files in a directory: every .md except the
@@ -280,10 +312,103 @@ type memoryLayout struct {
 	Worktree string
 	// Roots are the configured search roots, expanded.
 	Roots []string
+	// HostLayer says the host's own directory is a shared layer.
+	HostLayer bool
+	// Legacy says the store is still laid out as it was before 1.7:
+	// <org>/repos/<repo>, names in their original case.
+	Legacy bool
+	// StaleRoots are places the store used to be. Rules and directories in a
+	// settings file that point into one are dropped when it is rewritten.
+	StaleRoots []string
+}
+
+// reservedRepoNames are the directories an org keeps for itself. A repo with
+// one of these names would have no directory of its own.
+var reservedRepoNames = []string{"memory", "plans", "repos"}
+
+// newMemoryLayout places host/org/repo in the store. The store mirrors the
+// URL in lower case, since both a forge and a person treat MrFox/Devz and
+// mrfox/devz as one repository, and two directories for it would be two
+// memories. repo may be empty, for an org on its own.
+func newMemoryLayout(cfg config.Config, top, host, org, repo string) (memoryLayout, error) {
+	store := cfg.Claude.StoreDir()
+	l := memoryLayout{
+		Top: top, Host: host, Org: org, Repo: repo, Roots: expandedRoots(cfg),
+		HostLayer: cfg.Claude.Memory.HasHostLayer(host),
+		Legacy:    legacyStore(cfg),
+	}
+	orgDir := org
+	if !l.Legacy {
+		orgDir = strings.ToLower(org)
+		if orgDir == "memory" {
+			return memoryLayout{}, fmt.Errorf("%s/%s: an org named %q would share a directory with the host's own memory", host, org, org)
+		}
+		if slices.Contains(reservedRepoNames, strings.ToLower(repo)) {
+			return memoryLayout{}, fmt.Errorf("%s/%s/%s: a repository named %q cannot have a place in the store, "+
+				"because <org>/%s is the org's own directory", host, org, repo, repo, strings.ToLower(repo))
+		}
+		if legacyDir := cfg.Claude.LegacyStoreDir(); legacyDir != store {
+			l.StaleRoots = []string{legacyDir}
+		}
+	}
+	l.HostDir = filepath.Join(store, host)
+	l.OrgDir = filepath.Join(store, host, orgDir)
+	return l, nil
+}
+
+// legacyStore reports whether the store still has the layout from before
+// 1.7: it is at the old default path, or an org in it still keeps real
+// directories under repos/.
+func legacyStore(cfg config.Config) bool {
+	store := cfg.Claude.StoreDir()
+	if cfg.Claude.Memory.Store == "" && store == cfg.Claude.LegacyStoreDir() {
+		return true
+	}
+	for _, host := range realDirs(store) {
+		for _, org := range realDirs(filepath.Join(store, host)) {
+			if len(realDirs(filepath.Join(store, host, org, "repos"))) > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (l memoryLayout) repoMemory() string {
-	return filepath.Join(l.OrgDir, "repos", l.Repo, "memory")
+	if l.Legacy {
+		return filepath.Join(l.OrgDir, "repos", l.Repo, "memory")
+	}
+	return filepath.Join(l.OrgDir, strings.ToLower(l.Repo), "memory")
+}
+
+// ruleFile is the shared file that carries the branch rule: the host's where
+// the host is a layer, else the org's.
+func (l memoryLayout) ruleFile() string {
+	if l.HostLayer {
+		return l.hostClaude()
+	}
+	return l.orgClaude()
+}
+
+// staleRule reports whether a permission rule or directory in a settings
+// file points at somewhere the store, or this repo's place in it, used to be.
+func (l memoryLayout) staleRule(entry string) bool {
+	if l.Legacy {
+		return false
+	}
+	for _, root := range l.StaleRoots {
+		for _, form := range []string{root, tildePath(root), permissionPath(root)} {
+			if entry == form || strings.Contains(entry, form+"/") {
+				return true
+			}
+		}
+	}
+	for _, form := range []string{l.OrgDir, tildePath(l.OrgDir), permissionPath(l.OrgDir)} {
+		if strings.Contains(entry, form+"/repos/") {
+			return true
+		}
+	}
+	return false
 }
 func (l memoryLayout) plans() string      { return filepath.Join(l.OrgDir, "plans") }
 func (l memoryLayout) orgClaude() string  { return filepath.Join(l.OrgDir, "CLAUDE.md") }
@@ -298,7 +423,7 @@ func (l memoryLayout) settingsPath() string {
 // CLAUDE.md there would load in every repo under it, whatever its org.
 func (l memoryLayout) parentIsOrg() bool {
 	parent := filepath.Dir(l.Top)
-	return filepath.Base(parent) == l.Org && !slices.Contains(l.Roots, parent)
+	return strings.EqualFold(filepath.Base(parent), l.Org) && !slices.Contains(l.Roots, parent)
 }
 
 var errNotManaged = errors.New("not managed")
@@ -329,13 +454,9 @@ func resolveMemoryRepo(cfg config.Config, dir string) (memoryLayout, error) {
 		return memoryLayout{}, fmt.Errorf("%s: origin host %s is not in claude.memory.hosts: %w",
 			top, host, errNotManaged)
 	}
-	store := cfg.Claude.StoreDir()
-	return memoryLayout{
-		Top: top, Host: host, Org: org, Repo: repo, Roots: expandedRoots(cfg),
-		Worktree: worktree,
-		HostDir:  filepath.Join(store, host),
-		OrgDir:   filepath.Join(store, host, org),
-	}, nil
+	l, err := newMemoryLayout(cfg, top, host, org, repo)
+	l.Worktree = worktree
+	return l, err
 }
 
 // worktreesOf lists every working tree of the repo containing dir, the main
@@ -427,9 +548,11 @@ func memoryInit(ctx *cli.Context, l memoryLayout, dry bool) error {
 	say := func(format string, a ...any) { fmt.Fprintf(ctx.Stdout, "  "+format+"\n", a...) }
 	fmt.Fprintf(ctx.Stdout, "%s  (%s/%s/%s)\n", l.Top, l.Host, l.Org, l.Repo)
 
-	for _, d := range []string{
-		filepath.Join(l.HostDir, "memory"), filepath.Join(l.OrgDir, "memory"), l.plans(), l.repoMemory(),
-	} {
+	dirs := []string{filepath.Join(l.OrgDir, "memory"), l.plans(), l.repoMemory()}
+	if l.HostLayer {
+		dirs = append([]string{filepath.Join(l.HostDir, "memory")}, dirs...)
+	}
+	for _, d := range dirs {
 		if !exists(d) {
 			say("%s %s", verb("create"), tildePath(d))
 			if !dry {
@@ -466,10 +589,14 @@ func memoryInit(ctx *cli.Context, l memoryLayout, dry bool) error {
 	}
 
 	seeds := []struct{ path, body string }{
-		{l.hostClaude(), hostClaudeTemplate(l)},
-		{filepath.Join(l.HostDir, "memory", "MEMORY.md"), ""},
 		{l.orgClaude(), orgClaudeTemplate(l)},
 		{filepath.Join(l.OrgDir, "memory", "MEMORY.md"), ""},
+	}
+	if l.HostLayer {
+		seeds = append([]struct{ path, body string }{
+			{l.hostClaude(), hostClaudeTemplate(l)},
+			{filepath.Join(l.HostDir, "memory", "MEMORY.md"), ""},
+		}, seeds...)
 	}
 	for _, s := range seeds {
 		if !exists(s.path) {
@@ -482,16 +609,16 @@ func memoryInit(ctx *cli.Context, l memoryLayout, dry bool) error {
 		}
 	}
 
-	// A host CLAUDE.md from before the branch rule existed gets the rule
+	// A shared file from before the branch rule existed gets the rule
 	// appended. Nothing else in the file is touched.
-	if host, err := os.ReadFile(l.hostClaude()); err == nil && !bytes.Contains(host, []byte(branchRuleMarker)) {
-		say("%s the branch rule to %s", verb("append"), tildePath(l.hostClaude()))
+	if body, err := os.ReadFile(l.ruleFile()); err == nil && !bytes.Contains(body, []byte(branchRuleMarker)) {
+		say("%s the branch rule to %s", verb("append"), tildePath(l.ruleFile()))
 		if !dry {
 			sep := "\n"
-			if !bytes.HasSuffix(host, []byte("\n")) {
+			if !bytes.HasSuffix(body, []byte("\n")) {
 				sep = "\n\n"
 			}
-			if err := os.WriteFile(l.hostClaude(), append(host, []byte(sep+branchRuleSection)...), 0o644); err != nil {
+			if err := os.WriteFile(l.ruleFile(), append(body, []byte(sep+branchRuleSection)...), 0o644); err != nil {
 				return err
 			}
 		}
@@ -536,7 +663,7 @@ func memoryInit(ctx *cli.Context, l memoryLayout, dry bool) error {
 			}
 		}
 	} else {
-		say("skip org links: %s is not at <root>/%s/%s, so the org and company layers will not load here",
+		say("no org links: %s is not at <root>/%s/%s, so only the repo's own memory loads here",
 			tildePath(l.Top), l.Org, l.Repo)
 	}
 
@@ -628,11 +755,16 @@ func memoryStatus(ctx *cli.Context, l memoryLayout) {
 		fmt.Fprintf(ctx.Stdout, "  %-8s %s\n           %s; %s\n", name, tildePath(dir), lines, how)
 	}
 	orgLink := filepath.Join(filepath.Dir(l.Top), "CLAUDE.md")
-	orgHow := "loads through " + tildePath(orgLink)
-	if target, _ := os.Readlink(orgLink); target != l.orgClaude() {
-		orgHow = "NOT loaded: " + tildePath(orgLink) + " does not link to the store"
+	orgHow, orgOK := "loads through "+tildePath(orgLink), true
+	if !l.parentIsOrg() {
+		// Nothing to fix: this checkout has no org folder above it to link into.
+		orgHow = fmt.Sprintf("not loaded here: the checkout is not at <root>/%s/%s", l.Org, l.Repo)
+	} else if target, _ := os.Readlink(orgLink); target != l.orgClaude() {
+		orgHow, orgOK = "NOT loaded: "+tildePath(orgLink)+" does not link to the store", false
 	}
-	layer("company", filepath.Join(l.HostDir, "memory"), orgHow)
+	if l.HostLayer {
+		layer("host", filepath.Join(l.HostDir, "memory"), orgHow)
+	}
 	layer("org", filepath.Join(l.OrgDir, "memory"), orgHow)
 
 	shared, guarded := memorySettingsState(l)
@@ -648,7 +780,10 @@ func memoryStatus(ctx *cli.Context, l memoryLayout) {
 	}
 	fmt.Fprintf(ctx.Stdout, "  %-8s %s\n", "guard", guardHow)
 
-	if !memorySettingsCurrent(l) || !strings.HasPrefix(orgHow, "loads") {
+	if l.Legacy {
+		fmt.Fprintln(ctx.Stdout, "\nthe store uses the layout from before 1.7; run: devz claude memory migrate --dry-run")
+	}
+	if !memorySettingsCurrent(l) || !orgOK {
 		fmt.Fprintf(ctx.Stdout, "\nrun: devz claude memory init %s\n", l.Top)
 	}
 }
@@ -686,11 +821,17 @@ func memoryResults(l memoryLayout) []result {
 			"company and org memory can be written without a prompt", "devz claude memory init"))
 	}
 
-	if host, err := os.ReadFile(l.hostClaude()); err == nil && bytes.Contains(host, []byte(branchRuleMarker)) {
-		out = append(out, ok("claude:memory-rule", "branch rule is in "+tildePath(l.hostClaude())))
-	} else {
+	body, err := os.ReadFile(l.ruleFile())
+	switch {
+	case err == nil && bytes.Contains(body, []byte(branchRuleMarker)) && !l.HostLayer && !l.parentIsOrg():
+		// The rule is written down, but no shared file loads in a checkout
+		// with no org folder above it.
+		out = append(out, skip("claude:memory-rule", "no shared layer loads here, so the branch rule does not either"))
+	case err == nil && bytes.Contains(body, []byte(branchRuleMarker)):
+		out = append(out, ok("claude:memory-rule", "branch rule is in "+tildePath(l.ruleFile())))
+	default:
 		out = append(out, warn("claude:memory-rule",
-			"the branch rule is missing from "+tildePath(l.hostClaude()), "devz claude memory init"))
+			"the branch rule is missing from "+tildePath(l.ruleFile()), "devz claude memory init"))
 	}
 	return out
 }
@@ -808,6 +949,20 @@ func mergeMemorySettings(raw []byte, l memoryLayout) ([]byte, bool, error) {
 	// consult another org's memory. Writing is narrower: see memoryGuard.
 	if err := appendUnique("additionalDirectories", l.HostDir); err != nil {
 		return nil, false, err
+	}
+	// A settings file written before the store moved still names the old
+	// place. Those entries would keep a dead path readable and its rules live.
+	for _, key := range []string{"additionalDirectories", "allow", "ask"} {
+		if list, _ := perms[key].([]any); slices.ContainsFunc(list, func(v any) bool {
+			entry, _ := v.(string)
+			return l.staleRule(entry)
+		}) {
+			perms[key] = slices.DeleteFunc(slices.Clone(list), func(v any) bool {
+				entry, _ := v.(string)
+				return l.staleRule(entry)
+			})
+			changed = true
+		}
 	}
 	g := l.guard()
 	for _, rule := range g.allow {
@@ -934,8 +1089,29 @@ func countLines(b []byte) int {
 // ~/ paths so the one file reads the same from every checkout it is linked
 // into.
 func orgImports(l memoryLayout) string {
-	return fmt.Sprintf("@%s\n@%s\n",
-		tildePath(l.hostClaude()), tildePath(filepath.Join(l.OrgDir, "memory", "MEMORY.md")))
+	org := "@" + tildePath(filepath.Join(l.OrgDir, "memory", "MEMORY.md")) + "\n"
+	if !l.HostLayer {
+		return org
+	}
+	return "@" + tildePath(l.hostClaude()) + "\n" + org
+}
+
+// findingMemory tells a session how the store is laid out, so it can be asked
+// to read what another repo or org has learned. Writing stays narrower: see
+// memoryGuard.
+func findingMemory(l memoryLayout) string {
+	store := tildePath(filepath.Dir(l.HostDir))
+	return fmt.Sprintf(`## Finding memory
+
+The store mirrors a repository's URL, in lower case:
+
+- a repository: `+"`%[1]s/<host>/<org>/<repo>/memory/`"+`
+- an org: `+"`%[1]s/<host>/<org>/memory/`"+`, and its plans in `+"`plans/`"+` beside it
+
+`+"`devz claude memory path <host>/<org>[/<repo>]`"+` prints the directories and
+`+"`devz claude memory list`"+` shows what exists. Read another repository's or
+org's memory when it helps. Write only to your own repository's.
+`, store)
 }
 
 // branchRuleMarker lets init and doctor tell whether a host CLAUDE.md already
@@ -967,32 +1143,43 @@ Save each memory at the narrowest layer where it is always true.
 
 | Layer | Directory | Loaded by |
 |---|---|---|
-| Company: every repo on %[1]s | `+"`%[2]s/`"+` | this file |
+| Host: every repo on %[1]s | `+"`%[2]s/`"+` | this file |
 | Org: every repo in one org | `+"`%[3]s/<org>/memory/`"+` | the org CLAUDE.md |
 | Repo: one repository | your auto memory directory | auto memory |
 
-Auto memory saves to the repo layer on its own. For the company or org layer,
+Auto memory saves to the repo layer on its own. For the host or org layer,
 write the memory file in that directory and add its one-line pointer to the
 MEMORY.md there. When a repo memory turns out to hold for other repos too,
 move it up a layer and move its index line with it.
 
 `+branchRuleSection+`
-Company memory index (`+"`%[2]s/MEMORY.md`"+`):
+`+findingMemory(l)+`
+Host memory index (`+"`%[2]s/MEMORY.md`"+`):
 
 @%[2]s/MEMORY.md
 `, l.Host, mem, tildePath(l.HostDir))
 }
 
 func orgClaudeTemplate(l memoryLayout) string {
-	return orgImports(l) + fmt.Sprintf(`
+	loads := "The line above loads this org's memory index"
+	if l.HostLayer {
+		loads = "The two lines above load the host's shared context and this org's memory index"
+	}
+	body := orgImports(l) + fmt.Sprintf(`
 # %[1]s
 
 Shared guidance for every repository in %[2]s/%[1]s. Each repository's own
-CLAUDE.md still governs its code. The two lines above load the company
-context and this org's memory index (`+"`%[3]s/`"+`).
+CLAUDE.md still governs its code. %[5]s
+(`+"`%[3]s/`"+`).
 
 ## Plans
 
 Write plans to `+"`%[4]s/`"+`, never to a repository's docs/.
-`, l.Org, l.Host, tildePath(filepath.Join(l.OrgDir, "memory")), tildePath(l.plans()))
+`, l.Org, l.Host, tildePath(filepath.Join(l.OrgDir, "memory")), tildePath(l.plans()), loads)
+	if !l.HostLayer {
+		// With no host file above it, the org file is the widest shared one,
+		// so it carries what the host file would.
+		body += "\n" + branchRuleSection + "\n" + findingMemory(l)
+	}
+	return body
 }

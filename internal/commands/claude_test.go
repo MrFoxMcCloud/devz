@@ -484,7 +484,7 @@ func TestCompleteAsksTheCommand(t *testing.T) {
 		{[]string{"claude"}, "account,exec,memory,shell-init"},
 		{[]string{"claude", "account"}, "show,set,pick,list,clear,resolve"},
 		{[]string{"claude", "account", "set"}, "me@personal.dev,personal,me@work.example,work"},
-		{[]string{"claude", "memory"}, "status,init,path,list"},
+		{[]string{"claude", "memory"}, "status,init,path,list,migrate"},
 		{[]string{"claude", "memory", "init"}, "--all,--dry-run"},
 		{[]string{"config"}, "show,path,init,edit"},
 		{[]string{"nope"}, ""},
@@ -498,7 +498,7 @@ func TestCompleteAsksTheCommand(t *testing.T) {
 	if names := strings.Join(complete(ctx, app, nil), ","); strings.Contains(names, "memory") {
 		t.Errorf("first word offers a hidden alias: %s", names)
 	}
-	if got := strings.Join(complete(ctx, app, []string{"memory"}), ","); got != "status,init,path,list" {
+	if got := strings.Join(complete(ctx, app, []string{"memory"}), ","); got != "status,init,path,list,migrate" {
 		t.Errorf("complete([memory]) = %q", got)
 	}
 }

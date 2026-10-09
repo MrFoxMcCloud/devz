@@ -91,6 +91,12 @@ Run `make fmt vet test build` before calling a change done.
   into a worktree. The permission rules it writes are in `memoryLayout.guard`;
   `ask` rules there were tested to hold in accept-edits mode, and `*` to match
   one path segment.
+- The memory store has two layouts. `legacyStore` decides which, and a
+  `memoryLayout` carries `Legacy`. The old one (`orgs/<host>/<org>/repos/<repo>`)
+  must keep working untouched until `memory migrate` is run: never change a
+  path computed in legacy mode. `migrate` leaves a link at every path it moves
+  because running Claude sessions keep the settings they started with;
+  `--finish` removes them.
 - `memory` tests build real git repos in `t.TempDir()`. They set `HOME`,
   `XDG_CONFIG_HOME` and `GIT_CONFIG_GLOBAL` there (see `memoryEnv`) so they
   never touch the real global git ignore or `~/.claude-shared`.

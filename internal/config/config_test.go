@@ -132,3 +132,42 @@ func TestSkipped(t *testing.T) {
 		}
 	}
 }
+
+func TestStoreDirPrefersHostsAndFallsBackToTheOldPath(t *testing.T) {
+	shared := t.TempDir()
+	c := Claude{SharedDir: shared}
+	if got := c.StoreDir(); got != filepath.Join(shared, "hosts") {
+		t.Errorf("nothing on disk: %s, want hosts", got)
+	}
+	if err := os.Mkdir(filepath.Join(shared, "orgs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.StoreDir(); got != filepath.Join(shared, "orgs") {
+		t.Errorf("only the old directory exists: %s, want orgs", got)
+	}
+	if err := os.Mkdir(filepath.Join(shared, "hosts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.StoreDir(); got != filepath.Join(shared, "hosts") {
+		t.Errorf("both exist: %s, want hosts", got)
+	}
+	c.Memory.Store = "/elsewhere"
+	if got := c.StoreDir(); got != "/elsewhere" {
+		t.Errorf("configured store: %s", got)
+	}
+}
+
+func TestHasHostLayer(t *testing.T) {
+	var m Memory
+	if !m.HasHostLayer("git.example.com") || m.HasHostLayer("github.com") {
+		t.Error("by default a self-hosted forge has the layer and a public one does not")
+	}
+	m.HostLayer = []string{"github.com"}
+	if m.HasHostLayer("git.example.com") || !m.HasHostLayer("github.com") {
+		t.Error("hostLayer, when set, is the whole list")
+	}
+	m.HostLayer = []string{}
+	if m.HasHostLayer("git.example.com") {
+		t.Error("an empty hostLayer means no host has the layer")
+	}
+}
