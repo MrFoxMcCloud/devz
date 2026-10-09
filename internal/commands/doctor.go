@@ -292,6 +292,7 @@ func checkClaude(cfg config.Config) []result {
 		logins[i] = a.Email + " [" + a.Alias + "]"
 	}
 	out = append(out, ok("claude:accounts", strings.Join(logins, ", ")))
+	out = append(out, checkSync(cfg, known)...)
 	out = append(out, checkLaunch()...)
 
 	cwd, _ := os.Getwd()
@@ -353,11 +354,7 @@ func checkLaunch() []result {
 
 	// VS Code. The setting is machine-scoped, so one file decides for every
 	// window. Only checked where VS Code keeps settings on this machine.
-	for _, file := range []string{
-		filepath.Join(home, ".vscode-server", "data", "Machine", "settings.json"),
-		filepath.Join(home, ".config", "Code", "User", "settings.json"),
-		filepath.Join(home, "Library", "Application Support", "Code", "User", "settings.json"),
-	} {
+	for _, file := range vscodeSettingsFiles(home) {
 		data, err := os.ReadFile(file)
 		if err != nil {
 			continue
@@ -397,6 +394,16 @@ func checkLaunch() []result {
 		}
 	}
 	return out
+}
+
+// vscodeSettingsFiles are where VS Code keeps the settings that hold a
+// machine-scoped value, on a remote server, Linux and macOS.
+func vscodeSettingsFiles(home string) []string {
+	return []string{
+		filepath.Join(home, ".vscode-server", "data", "Machine", "settings.json"),
+		filepath.Join(home, ".config", "Code", "User", "settings.json"),
+		filepath.Join(home, "Library", "Application Support", "Code", "User", "settings.json"),
+	}
 }
 
 // jsonStringValue pulls one string setting out of a settings file that may

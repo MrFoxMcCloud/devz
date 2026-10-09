@@ -53,6 +53,8 @@ type claudeAccount struct {
 	Email, Alias, Org string
 	// ConfigDir is the account's config dir.
 	ConfigDir string
+	// StateFile is the account's .claude.json: its login, and its MCP servers.
+	StateFile string
 	// Default is the account in ~/.claude. It is reached by leaving
 	// CLAUDE_CONFIG_DIR unset: with the variable set to ~/.claude, Claude Code
 	// keeps its state at ~/.claude/.claude.json instead of ~/.claude.json,
@@ -121,7 +123,7 @@ func claudeAccounts(cfg config.Config) []claudeAccount {
 		}
 		found = append(found, claudeAccount{
 			Email: state.OAuth.Email, Alias: c.alias, Org: state.OAuth.Org,
-			ConfigDir: c.dir, Default: c.isDefault,
+			ConfigDir: c.dir, StateFile: c.json, Default: c.isDefault,
 		})
 	}
 	return found

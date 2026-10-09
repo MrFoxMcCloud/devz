@@ -376,7 +376,7 @@ func TestCheckLaunch(t *testing.T) {
 func TestClaudeFallsThroughToAPlugin(t *testing.T) {
 	cfg, plugins, home := claudeEnv(t)
 	record := filepath.Join(home, "called")
-	script(t, filepath.Join(plugins, "devz-claude-sync"),
+	script(t, filepath.Join(plugins, "devz-claude-hello"),
 		`# devz: share settings across config dirs
 printf '%s|via=%s\n' "$*" "$DEVZ_VIA" > "`+record+`"
 [ "$1" = fail ] && exit 7
@@ -387,14 +387,14 @@ exit 0
 
 	var out bytes.Buffer
 	ctx := &cli.Context{Config: cfg, Stdout: &out, Stderr: &bytes.Buffer{}}
-	if err := runClaude(ctx, []string{"sync", "status", "x"}); err != nil {
-		t.Fatalf("claude sync: %v", err)
+	if err := runClaude(ctx, []string{"hello", "status", "x"}); err != nil {
+		t.Fatalf("claude hello: %v", err)
 	}
 	if got, _ := os.ReadFile(record); string(got) != "status x|via=1\n" {
 		t.Errorf("plugin was called with %q", got)
 	}
 
-	err := runClaude(ctx, []string{"sync", "fail"})
+	err := runClaude(ctx, []string{"hello", "fail"})
 	var exit cli.ExitError
 	if !errors.As(err, &exit) || exit.Code != 7 {
 		t.Errorf("err = %v, want the plugin's exit status 7", err)
@@ -415,19 +415,19 @@ exit 0
 	if err := runClaude(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
-	if got := out.String(); !strings.Contains(got, "sync") || !strings.Contains(got, "share settings across config dirs") {
+	if got := out.String(); !strings.Contains(got, "hello") || !strings.Contains(got, "share settings across config dirs") {
 		t.Errorf("overview does not list the plugin with its description:\n%s", got)
 	}
 	// Built-ins first, then what is on PATH. The shadowed plugin is on PATH
 	// too; completing its name is harmless, since the built-in is what runs.
-	if got := strings.Join(completeClaude(ctx, nil), ","); got != "account,exec,memory,shell-init,worktree,account,sync" {
+	if got := strings.Join(completeClaude(ctx, nil), ","); got != "account,eject,exec,memory,shell-init,sync,worktree,account,hello" {
 		t.Errorf("completeClaude = %s", got)
 	}
 }
 
 func TestCheckPluginsFlagsWhatCanNeverRun(t *testing.T) {
 	_, plugins, _ := claudeEnv(t)
-	for _, name := range []string{"devz-tunnel", "devz-secrets", "devz-claude-sync", "devz-claude-memory"} {
+	for _, name := range []string{"devz-tunnel", "devz-secrets", "devz-claude-hello", "devz-claude-memory"} {
 		script(t, filepath.Join(plugins, name), "exit 0\n")
 	}
 	app := cli.New("test", Secrets(), Claude())
@@ -440,8 +440,8 @@ func TestCheckPluginsFlagsWhatCanNeverRun(t *testing.T) {
 			oks = append(oks, r.detail)
 		}
 	}
-	if len(oks) != 1 || oks[0] != "claude sync, tunnel" {
-		t.Errorf("reachable plugins = %v, want [claude sync, tunnel]", oks)
+	if len(oks) != 1 || oks[0] != "claude hello, tunnel" {
+		t.Errorf("reachable plugins = %v, want [claude hello, tunnel]", oks)
 	}
 	if len(warns) != 2 || !strings.Contains(strings.Join(warns, "\n"), "'devz secrets' is built in") ||
 		!strings.Contains(strings.Join(warns, "\n"), "'devz claude memory' is built in") {
@@ -481,7 +481,7 @@ func TestCompleteAsksTheCommand(t *testing.T) {
 	}{
 		{[]string{"secrets", "map"}, "team/token"},
 		{[]string{"secrets", "exec"}, "TEAM_TOKEN"},
-		{[]string{"claude"}, "account,exec,memory,shell-init,worktree"},
+		{[]string{"claude"}, "account,eject,exec,memory,shell-init,sync,worktree"},
 		{[]string{"claude", "account"}, "show,set,pick,list,clear,resolve"},
 		{[]string{"claude", "account", "set"}, "me@personal.dev,personal,me@work.example,work"},
 		{[]string{"claude", "memory"}, "status,init,path,list,migrate"},
