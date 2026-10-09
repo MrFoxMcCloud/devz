@@ -34,6 +34,11 @@ func DeprecatedLogPath() string {
 // name, and says so on a terminal. It never fails the command it is noting:
 // a log that cannot be written is not a reason to refuse to run.
 func NoteDeprecated(ctx *Context, old, replacement string) {
+	// A script that was itself called by an old name has already noted that,
+	// and reaches devz with DEVZ_VIA set. One use, one line.
+	if os.Getenv("DEVZ_VIA") != "" {
+		return
+	}
 	// Only to a terminal: a script that captures stderr should not find a
 	// notice in what it captured.
 	if f, ok := ctx.Stderr.(*os.File); ok && isTerminal(f) {

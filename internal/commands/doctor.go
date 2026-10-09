@@ -282,23 +282,107 @@ func checkClaude(cfg config.Config) []result {
 		}
 	}
 
-	resolve := filepath.Join(shared, "bin", "claude-account-resolve")
-	if !exists(resolve) {
-		return append(out, warn("claude:account", "claude-account-resolve not found", ""))
+	known := claudeAccounts(cfg)
+	if len(known) == 0 {
+		return append(out, warn("claude:accounts", "no config dir is logged in", "run `claude`, then /login"))
 	}
+	logins := make([]string, len(known))
+	for i, a := range known {
+		logins[i] = a.Email + " [" + a.Alias + "]"
+	}
+	out = append(out, ok("claude:accounts", strings.Join(logins, ", ")))
+	out = append(out, checkLaunch()...)
+
 	cwd, _ := os.Getwd()
-	email, err := output(resolve, "--info", cwd)
+	acct, marker, err := resolveAccount(cfg, cwd)
 	if err != nil {
-		return append(out, warn("claude:account", "marker does not resolve here",
-			"claude-account --list, then claude-account <email>"))
+		detail := "the marker here does not resolve"
+		if marker != "" {
+			detail = tildePath(marker) + " names an account nobody is logged into"
+		}
+		return append(out, warn("claude:account", detail,
+			"devz claude account list, then devz claude account set <email>"))
 	}
-	// --info prints tab-separated fields; the first is the account email.
-	email, _, _ = strings.Cut(strings.ReplaceAll(email, "\n", "\t"), "\t")
-	if email == "" {
-		email = "(default account)"
-	}
-	out = append(out, ok("claude:account", email))
+	out = append(out, ok("claude:account", acct.Email))
 	return append(out, checkMemory(cfg, cwd)...)
+}
+
+// checkLaunch looks at the two places Claude Code is started from, since the
+// account rule only helps where something applies it. It reads files; it
+// does not start a shell or an editor.
+func checkLaunch() []result {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	var out []result
+
+	// VS Code. The setting is machine-scoped, so one file decides for every
+	// window. Only checked where VS Code keeps settings on this machine.
+	for _, file := range []string{
+		filepath.Join(home, ".vscode-server", "data", "Machine", "settings.json"),
+		filepath.Join(home, ".config", "Code", "User", "settings.json"),
+		filepath.Join(home, "Library", "Application Support", "Code", "User", "settings.json"),
+	} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		wrapper := jsonStringValue(string(data), "claudeCode.claudeProcessWrapper")
+		switch {
+		case wrapper == "":
+			out = append(out, warn("claude:launch", "VS Code starts Claude on the default account in every window: "+
+				tildePath(file)+" sets no claudeCode.claudeProcessWrapper",
+				`point it at a script containing: exec devz claude exec -- "$@"`))
+		case !exists(config.Expand(wrapper)):
+			out = append(out, fail("claude:launch", "VS Code's Claude wrapper does not exist: "+wrapper,
+				`create it, containing: exec devz claude exec -- "$@"`))
+		default:
+			out = append(out, ok("claude:launch", "VS Code: "+tildePath(wrapper)))
+		}
+		break
+	}
+
+	// The shell. A function cannot be seen from here, so look for what
+	// defines it in the rc file of the login shell.
+	rc := ""
+	switch filepath.Base(os.Getenv("SHELL")) {
+	case "zsh":
+		rc = filepath.Join(home, ".zshrc")
+	case "bash":
+		rc = filepath.Join(home, ".bashrc")
+	}
+	if data, err := os.ReadFile(rc); err == nil {
+		text := string(data)
+		if strings.Contains(text, "claude exec") || strings.Contains(text, "claude-account-resolve") {
+			out = append(out, ok("claude:launch", "shell: "+tildePath(rc)+" applies the account rule"))
+		} else {
+			out = append(out, warn("claude:launch", "a bare `claude` in a terminal ignores the repo's account: nothing in "+
+				tildePath(rc)+" applies the rule",
+				"devz claude shell-init "+filepath.Base(os.Getenv("SHELL"))+" >> "+tildePath(rc)))
+		}
+	}
+	return out
+}
+
+// jsonStringValue pulls one string setting out of a settings file that may
+// hold comments, which VS Code allows and encoding/json does not. It is a
+// read-only peek, so a line match is enough.
+func jsonStringValue(text, key string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		rest, found := strings.CutPrefix(line, `"`+key+`"`)
+		if !found {
+			continue
+		}
+		rest = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest), ":"))
+		if !strings.HasPrefix(rest, `"`) {
+			return ""
+		}
+		value, _, _ := strings.Cut(rest[1:], `"`)
+		return value
+	}
+	return ""
 }
 
 // checkGitBackup reports whether dir is backed up: a git repo of its own (or
@@ -351,9 +435,7 @@ func checkAllCheckouts(cfg config.Config) []result {
 	if len(roots) == 0 {
 		return []result{skip("claude:all", "claude.memory.roots not set")}
 	}
-	resolve := filepath.Join(config.Expand(cfg.Claude.SharedDir), "bin", "claude-account-resolve")
-	canResolve := exists(resolve)
-
+	known := claudeAccounts(cfg)
 	var out []result
 	checkouts, trees := 0, 0
 	seen, ruleSeen := map[string]bool{}, map[string]bool{}
@@ -389,12 +471,13 @@ func checkAllCheckouts(cfg config.Config) []result {
 
 			for _, tree := range worktreesOf(top) {
 				trees++
-				if !canResolve {
+				// With nobody logged in at all, claude:accounts has said so.
+				if len(known) == 0 {
 					continue
 				}
-				if _, err := output(resolve, tree); err != nil {
-					out = append(out, warn("claude:account", tildePath(tree)+": marker does not resolve",
-						"cd there, then claude-account --list and claude-account <email>"))
+				if _, _, err := resolveAmong(known, tree); err != nil {
+					out = append(out, warn("claude:account", tildePath(tree)+": the marker names an account nobody is logged into",
+						"cd there, then devz claude account list and devz claude account set <email>"))
 				}
 			}
 		}

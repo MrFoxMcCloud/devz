@@ -12,7 +12,9 @@ import (
 // descriptions. Anything else is looked for as a devz-claude-<sub> plugin.
 var claudeBuiltins = []struct{ name, short string }{
 	{"account", "show or set the Claude Code account for this repo"},
+	{"exec", "run a command, normally Claude Code, as this repo's account"},
 	{"memory", "share Claude memory and plans per repo, org and host"},
+	{"shell-init", "print the claude function for a shell rc file"},
 }
 
 // Claude groups everything devz does for Claude Code on a machine with more
@@ -29,11 +31,13 @@ func Claude() *cli.Command {
 		Group: true,
 		Usage: `usage: devz claude <subcommand> [args]
 
-  account   show or set the Claude Code account for this repo
-  memory    share Claude memory and plans per repo, org and host
+  account      show or set the Claude Code account for this repo
+  exec         run a command, normally Claude Code, as this repo's account
+  memory       share Claude memory and plans per repo, org and host
+  shell-init   print the claude function for a shell rc file
 
-Run 'devz claude <subcommand> help' for either, and 'devz claude' to list the
-plugins as well.
+Run 'devz claude <subcommand> help' for account, exec or memory, and
+'devz claude' to list the plugins as well.
 
 A subcommand that is not built in is looked up as devz-claude-<name> on PATH,
 the same way 'devz <name>' finds devz-<name>. A plugin gets DEVZ_VIA=1 in its
@@ -54,8 +58,12 @@ func runClaude(ctx *cli.Context, args []string) error {
 	switch sub {
 	case "account":
 		return runClaudeAccount(ctx, rest)
+	case "exec":
+		return runClaudeExec(ctx, rest)
 	case "memory":
 		return runMemory(ctx, rest)
+	case "shell-init":
+		return runClaudeShellInit(ctx, rest)
 	case "help", "-h", "--help":
 		printClaudeOverview(ctx)
 		return nil
@@ -107,7 +115,9 @@ func completeClaude(ctx *cli.Context, args []string) []string {
 	case "account":
 		switch {
 		case len(args) == 1:
-			return []string{"show", "set", "pick", "list", "clear"}
+			return []string{"show", "set", "pick", "list", "clear", "resolve"}
+		case len(args) == 2 && args[1] == "resolve":
+			return []string{"--config-dir", "--alias", "--info", "--list", "--check"}
 		case len(args) == 2 && args[1] == "set":
 			return accountNames(ctx.Config)
 		case len(args) > 2 && args[1] == "set" && !strings.HasPrefix(args[len(args)-1], "--root"):
@@ -115,6 +125,14 @@ func completeClaude(ctx *cli.Context, args []string) []string {
 		}
 	case "memory":
 		return completeMemory(ctx, args[1:])
+	case "shell-init":
+		if len(args) == 1 {
+			return []string{"zsh", "bash"}
+		}
+	case "exec":
+		if len(args) == 1 {
+			return []string{"--keep-env", "--"}
+		}
 	}
 	return nil
 }

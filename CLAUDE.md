@@ -43,8 +43,8 @@ Run `make fmt vet test build` before calling a change done.
 - **Zero third-party dependencies.** Standard library only. Don't add modules
   to go.mod.
 - **Don't wrap other people's tools.** No `devz kubectl`/`gh`/`terraform`.
-  devz is for our own glue. When a tool already owns something (`pass`,
-  `claude-account`), shell out to it instead of reimplementing it.
+  devz is for our own glue. When a tool already owns something, as `pass`
+  owns the secret store, shell out to it instead of reimplementing it.
 - **Behavior goes in the binary; anything that differs per machine goes in the
   config** (paths, key ids, which checks apply). New per-machine knobs go into
   `config.Config` with a doc comment and a sensible value in `Default()`.
@@ -71,6 +71,15 @@ Run `make fmt vet test build` before calling a change done.
 - `claude` is a `Group`: an unknown `devz claude <sub>` runs
   `devz-claude-<sub>` from PATH. When you compile such a plugin in, add it to
   `claudeBuiltins` so `devz doctor` flags the script left behind.
+- **The Claude account rule has one definition:** the comment and code at the
+  top of `internal/commands/accounts.go`. It used to be a script outside this
+  repo; it was ported behind a comparison of both over every checkout and
+  worktree on a real machine. `devz claude exec` runs on every Claude Code
+  launch, in the editor and the shell, so a bug there stops every session or,
+  worse, starts one on the wrong account. Keep it failing closed: a marker
+  that does not resolve is exit status 3 and nothing runs. Never fall back to
+  the default account. The default account means CLAUDE_CONFIG_DIR *unset*,
+  never set to `~/.claude`.
 - A command that hands off to another program returns `cli.ExitError` with
   the child's exit status, so the status survives and nothing is printed
   twice.
