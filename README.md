@@ -117,6 +117,9 @@ summary line. Notable checks:
 | `gpg:cache` | a cold agent cache, which surfaces as unrelated-looking startup failures in tools that have no TTY |
 | `pass:entries` | configured secrets missing from the store (checked on disk, so doctor never triggers a prompt of its own) |
 | `pass:backup` | a store with no git remote: one copy, one disk |
+| `claude:accounts` | which Claude accounts are logged in on this machine |
+| `claude:account` | a `.claude-account` marker that names an account nobody is logged into |
+| `claude:launch` | VS Code or the shell starting Claude Code without applying the account rule, so every window or terminal lands on the default account |
 | `claude:memory` | a repo on a `claude.memory.hosts` forge whose Claude memory is not shared yet |
 | `claude:memory-guard` | a repo where Claude can still write company or org memory without being asked |
 | `claude:memory-rule` | a host `CLAUDE.md` without the branch rule |
@@ -211,16 +214,64 @@ devz claude account set <email> --root .  # in a worktree: that worktree alone
 devz claude account pick                  # choose from the accounts logged in here
 devz claude account list
 devz claude account clear                 # drop the marker that applies here
+devz claude account resolve [--config-dir|--alias|--info] [DIR]   # for scripts
 ```
 
-The account is a property of the repo: one `.claude-account` file at the root
-of the main checkout, followed by every linked worktree. A marker naming an
-account nobody is logged into is an error, exit status 3, never a quiet
-fallback to the default account.
+Each Claude login lives in its own config dir: `~/.claude`, the default, and
+`~/.claude-<name>`. Claude Code picks one through `CLAUDE_CONFIG_DIR`. Accounts
+are discovered from those dirs, so logging into another one
+(`CLAUDE_CONFIG_DIR=~/.claude-<name> claude`, then `/login`) makes it usable
+with nothing to configure.
 
-This runs `claude-account` from `claude.sharedDir`, which owns the marker rule,
-and keeps its exit status. It is not reimplemented: two implementations of one
-rule is how they drift.
+Which account a directory gets is decided per repo, by a `.claude-account` file
+holding one word: an email, an unambiguous prefix of one, or an alias
+(`personal` for the default dir, or what follows `.claude-`).
+
+1. The marker in this worktree, searched from the directory up to the repo
+   root and never above it.
+2. In a linked worktree with none, the marker at the root of the repo's main
+   checkout. Set the account once and every worktree follows, wherever the
+   worktree sits.
+3. No marker: the default account.
+
+A marker inside one worktree overrides the repo's, which is how one repo can
+be worked on two accounts at once. A marker naming an account nobody is logged
+into is an error, exit status 3, never a quiet fallback to the default
+account: being quietly on the wrong account is the failure this exists to
+prevent.
+
+`set` checks the name against the logged-in accounts before writing anything,
+stores the canonical email, and adds `.claude-account` to your global git
+ignore the first time. `resolve` prints one value for a script; with
+`--config-dir` an empty line means the default account, which is reached by
+unsetting the variable, not by pointing it at `~/.claude`.
+
+### `devz claude exec`
+
+```sh
+devz claude exec [--keep-env] [--] <command> [args]
+```
+
+Runs a command, normally Claude Code, as the account the current directory's
+repo uses: it sets `CLAUDE_CONFIG_DIR`, or unsets it for the default account,
+and replaces itself with the command. If the marker does not resolve, nothing
+runs and the exit status is 3.
+
+This is the launch path, for the two places Claude Code is started from:
+
+- **VS Code.** The extension's own account setting is machine-scoped and cannot
+  vary per window. `claudeCode.claudeProcessWrapper` can point at a script, and
+  the extension runs it in the workspace folder with the real binary as its
+  arguments. That script is one line: `exec devz claude exec -- "$@"`.
+- **A shell.** `devz claude shell-init zsh` prints a `claude` function for your
+  rc file. It uses `--keep-env`, so a `CLAUDE_CONFIG_DIR` you set by hand still
+  wins. Without the flag the marker always decides, which is right for an
+  editor, whose windows inherit an environment that says nothing about the
+  folder they have open.
+
+devz prints the function and does not edit your rc file. `devz doctor`
+(`claude:launch`) says whether both places apply the rule. `DEVZ_BIN` in the
+printed function points one shell at another devz build.
 
 ### `devz claude memory`
 
@@ -334,7 +385,7 @@ whatever still calls it. Today:
 
 | Old | Now |
 |---|---|
-| `devz account` | `devz claude account` (the old name takes `claude-account`'s own arguments) |
+| `devz account` | `devz claude account` (the old name takes the arguments the `claude-account` script took: `<email>`, `--select`, `--list`, `--clear`) |
 | `devz memory` | `devz claude memory` |
 | `devz secrets edit` | `devz secrets rotate` |
 
