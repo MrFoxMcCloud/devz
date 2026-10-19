@@ -368,7 +368,7 @@ func accountResolve(ctx *cli.Context, args []string) error {
 }
 
 // execUsage is the help for `devz claude exec`.
-const execUsage = `usage: devz claude exec [--keep-env] [--] <command> [args]
+const execUsage = `usage: devz claude exec [--keep-env] [--account NAME] [--] <command> [args]
 
 Runs a command, normally Claude Code itself, as the account this directory's
 repo uses: it sets CLAUDE_CONFIG_DIR for a named account, or unsets it for the
@@ -378,7 +378,14 @@ default one, then replaces itself with the command.
                shell, where setting it by hand is how you ask for an account.
                Without it the marker always decides, which is right for an
                editor: its windows inherit an environment that says nothing
-               about the folder they have open.
+               about the folder they have open. A CLAUDE_CONFIG_DIR that names the
+               default account's dir (~/.claude) counts as the default account:
+               it is unset, because Claude Code keeps that account's login and
+               MCP servers in ~/.claude.json, not in ~/.claude/.claude.json.
+  -a, --account NAME
+               run as this account (an email, a prefix of one, or an alias such
+               as 'personal') for this launch only, whatever the marker or a
+               CLAUDE_CONFIG_DIR says. The marker is not changed.
 
 If the marker names an account nobody is logged into, nothing is run and the
 exit status is 3. Starting on the wrong account is never the fallback.
@@ -394,15 +401,26 @@ func runClaudeExec(ctx *cli.Context, args []string) error {
 	if !ctx.Config.Claude.Enabled {
 		return fmt.Errorf("claude support is disabled; set claude.enabled=true in %s", mustConfigPath())
 	}
-	keep := false
+	keep, account := false, ""
 	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
-		switch args[0] {
-		case "--keep-env":
+		switch {
+		case args[0] == "--keep-env":
 			keep = true
-		case "--":
+		case args[0] == "-a" || args[0] == "--account":
+			if len(args) < 2 || args[1] == "" {
+				return fmt.Errorf("%s needs an account", args[0])
+			}
+			account = args[1]
+			args = args[1:]
+		case strings.HasPrefix(args[0], "--account="):
+			account = strings.TrimPrefix(args[0], "--account=")
+			if account == "" {
+				return fmt.Errorf("--account needs an account")
+			}
+		case args[0] == "--":
 			args = args[1:]
 			goto parsed
-		case "-h", "--help":
+		case args[0] == "-h" || args[0] == "--help":
 			fmt.Fprintln(ctx.Stdout, execUsage)
 			return nil
 		default:
@@ -412,24 +430,64 @@ func runClaudeExec(ctx *cli.Context, args []string) error {
 	}
 parsed:
 	if len(args) == 0 {
-		return fmt.Errorf("usage: devz claude exec [--keep-env] [--] <command> [args]")
+		return fmt.Errorf("usage: devz claude exec [--keep-env] [--account NAME] [--] <command> [args]")
 	}
 	path, err := exec.LookPath(args[0])
 	if err != nil {
 		return err
 	}
 
-	env := os.Environ()
-	if !keep || os.Getenv("CLAUDE_CONFIG_DIR") == "" {
-		acct, _, err := resolveAccount(ctx.Config, ".")
-		if err != nil {
-			return unresolvedExit(ctx, err)
-		}
-		env = withConfigDir(env, acct.configDirEnv())
+	env, err := launchEnv(ctx.Config, os.Environ(), keep, account)
+	if err != nil {
+		return unresolvedExit(ctx, err)
 	}
 	// Replace devz rather than run a child, so stdio, signals and the exit
 	// status are the command's own.
 	return syscall.Exec(path, args, env)
+}
+
+// launchEnv is the environment a launch runs in. An account asked for by name
+// wins over everything. Otherwise a CLAUDE_CONFIG_DIR already set is kept when
+// keep is true, except that the default account's own dir counts as "the
+// default account" and is unset (see claudeAccount.configDirEnv). Otherwise the
+// marker decides.
+func launchEnv(cfg config.Config, env []string, keep bool, account string) ([]string, error) {
+	if account != "" {
+		known := claudeAccounts(cfg)
+		if len(known) == 0 {
+			return nil, unresolvedError{"no config dir is logged in: run `claude` and /login"}
+		}
+		acct, err := matchAccount(account, known)
+		if err != nil {
+			return nil, err
+		}
+		return withConfigDir(env, acct.configDirEnv()), nil
+	}
+	if keep {
+		if set := envValue(env, "CLAUDE_CONFIG_DIR"); set != "" {
+			for _, a := range claudeAccounts(cfg) {
+				if a.Default && filepath.Clean(set) == filepath.Clean(a.ConfigDir) {
+					return withConfigDir(env, ""), nil
+				}
+			}
+			return env, nil
+		}
+	}
+	acct, _, err := resolveAccount(cfg, ".")
+	if err != nil {
+		return nil, err
+	}
+	return withConfigDir(env, acct.configDirEnv()), nil
+}
+
+// envValue is the value of name in env, or "".
+func envValue(env []string, name string) string {
+	for _, kv := range env {
+		if strings.HasPrefix(kv, name+"=") {
+			return strings.TrimPrefix(kv, name+"=")
+		}
+	}
+	return ""
 }
 
 // withConfigDir returns env with CLAUDE_CONFIG_DIR set to dir, or removed
@@ -451,12 +509,18 @@ func withConfigDir(env []string, dir string) []string {
 // to paste into an rc file. It is printed, not written, because the rc file
 // is the user's.
 const shellInit = `# Claude Code on the account this directory's repo uses. See
-# 'devz claude account help'. A CLAUDE_CONFIG_DIR you set by hand still wins.
+# 'devz claude account help'. A CLAUDE_CONFIG_DIR you set by hand still wins,
+# and 'claude -a <email|alias> ...' runs one session as another account.
 # If devz is missing or the marker does not resolve, nothing is started:
 # being quietly on the wrong account is the failure this prevents.
 # DEVZ_BIN points it at another devz build for one shell.
 claude() {
-  command "${DEVZ_BIN:-devz}" claude exec --keep-env -- claude "$@"
+  local acct=()
+  if [[ $1 == -a || $1 == --account ]]; then
+    [[ -n $2 ]] || { echo "claude: $1 needs an account" >&2; return 2; }
+    acct=(--account "$2"); shift 2
+  fi
+  command "${DEVZ_BIN:-devz}" claude exec --keep-env "${acct[@]}" -- claude "$@"
 }
 `
 
