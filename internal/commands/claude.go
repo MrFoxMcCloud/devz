@@ -16,6 +16,7 @@ var claudeBuiltins = []struct{ name, short string }{
 	{"eject", "how to take this machine off the shared setup"},
 	{"exec", "run a command, normally Claude Code, as this repo's account"},
 	{"memory", "share Claude memory and plans per repo, org and host"},
+	{"ps", "list running Claude Code sessions and the account each runs on"},
 	{"shell-init", "print the claude function for a shell rc file"},
 	{"sync", "keep every account on one set of settings, skills and MCP servers"},
 	{"worktree", "work on several branches of a repo at once, on its account"},
@@ -39,6 +40,7 @@ func Claude() *cli.Command {
   eject        how to take this machine off the shared setup
   exec         run a command, normally Claude Code, as this repo's account
   memory       share Claude memory and plans per repo, org and host
+  ps           list running Claude Code sessions and the account each runs on
   shell-init   print the claude function for a shell rc file
   sync         keep every account on one set of settings, skills and MCP servers
   worktree     work on several branches of a repo at once, on its account
@@ -69,6 +71,8 @@ func runClaude(ctx *cli.Context, args []string) error {
 		return runClaudeEject(ctx, rest)
 	case "exec":
 		return runClaudeExec(ctx, rest)
+	case "ps":
+		return runClaudePs(ctx, rest)
 	case "sync":
 		return runClaudeSync(ctx, rest)
 	case "memory":
@@ -153,6 +157,8 @@ func completeClaude(ctx *cli.Context, args []string) []string {
 		case len(args) == 2 && args[1] == "pull":
 			return accountNames(ctx.Config)
 		}
+	case "ps":
+		return nil
 	case "eject":
 		if len(args) == 1 {
 			return []string{"--apply"}

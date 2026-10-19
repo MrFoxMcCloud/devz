@@ -378,7 +378,11 @@ default one, then replaces itself with the command.
                shell, where setting it by hand is how you ask for an account.
                Without it the marker always decides, which is right for an
                editor: its windows inherit an environment that says nothing
-               about the folder they have open. A CLAUDE_CONFIG_DIR that names the
+               about the folder they have open. A value devz itself set for a
+               parent session (it is equal to DEVZ_CLAUDE_SET, which devz
+               records on every launch) is inherited, not asked for, so the
+               marker decides: a session on one account can start another in
+               a repo that uses a different one. A CLAUDE_CONFIG_DIR that names the
                default account's dir (~/.claude) counts as the default account:
                it is unset, because Claude Code keeps that account's login and
                MCP servers in ~/.claude.json, not in ~/.claude/.claude.json.
@@ -446,11 +450,19 @@ parsed:
 	return syscall.Exec(path, args, env)
 }
 
+// setMarkerVar records the CLAUDE_CONFIG_DIR value devz last chose. It is how a
+// later launch tells a value devz set (inherited from a parent session) from
+// one typed by hand.
+const setMarkerVar = "DEVZ_CLAUDE_SET"
+
 // launchEnv is the environment a launch runs in. An account asked for by name
 // wins over everything. Otherwise a CLAUDE_CONFIG_DIR already set is kept when
 // keep is true, except that the default account's own dir counts as "the
-// default account" and is unset (see claudeAccount.configDirEnv). Otherwise the
-// marker decides.
+// default account" and is unset (see claudeAccount.configDirEnv), and except
+// that a value equal to DEVZ_CLAUDE_SET was set by devz for an earlier session
+// and is inherited, not asked for: the marker decides. Otherwise the marker
+// decides. Whenever it sets or unsets CLAUDE_CONFIG_DIR, it records the value
+// in DEVZ_CLAUDE_SET (empty for the default account).
 func launchEnv(cfg config.Config, env []string, keep bool, account string) ([]string, error) {
 	if account != "" {
 		known := claudeAccounts(cfg)
@@ -464,7 +476,9 @@ func launchEnv(cfg config.Config, env []string, keep bool, account string) ([]st
 		return withConfigDir(env, acct.configDirEnv()), nil
 	}
 	if keep {
-		if set := envValue(env, "CLAUDE_CONFIG_DIR"); set != "" {
+		set := envValue(env, "CLAUDE_CONFIG_DIR")
+		inherited := filepath.Clean(set) == filepath.Clean(envValue(env, setMarkerVar))
+		if set != "" && !inherited {
 			for _, a := range claudeAccounts(cfg) {
 				if a.Default && filepath.Clean(set) == filepath.Clean(a.ConfigDir) {
 					return withConfigDir(env, ""), nil
@@ -491,25 +505,26 @@ func envValue(env []string, name string) string {
 }
 
 // withConfigDir returns env with CLAUDE_CONFIG_DIR set to dir, or removed
-// when dir is "".
+// when dir is "", and DEVZ_CLAUDE_SET recording that choice.
 func withConfigDir(env []string, dir string) []string {
-	out := make([]string, 0, len(env)+1)
+	out := make([]string, 0, len(env)+2)
 	for _, kv := range env {
-		if !strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") {
+		if !strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") && !strings.HasPrefix(kv, setMarkerVar+"=") {
 			out = append(out, kv)
 		}
 	}
 	if dir != "" {
 		out = append(out, "CLAUDE_CONFIG_DIR="+dir)
 	}
-	return out
+	return append(out, setMarkerVar+"="+dir)
 }
 
 // shellInit is what `devz claude shell-init zsh` prints: a `claude` function
 // to paste into an rc file. It is printed, not written, because the rc file
 // is the user's.
 const shellInit = `# Claude Code on the account this directory's repo uses. See
-# 'devz claude account help'. A CLAUDE_CONFIG_DIR you set by hand still wins,
+# 'devz claude account help'. A CLAUDE_CONFIG_DIR you set by hand still wins
+# (one inherited from a devz-started session does not: the marker decides),
 # and 'claude -a <email|alias> ...' runs one session as another account.
 # If devz is missing or the marker does not resolve, nothing is started:
 # being quietly on the wrong account is the failure this prevents.

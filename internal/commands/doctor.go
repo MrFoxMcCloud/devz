@@ -282,6 +282,7 @@ func checkClaude(cfg config.Config) []result {
 		}
 	}
 	out = append(out, checkMemoryLayout(cfg)...)
+	out = append(out, checkStrayState()...)
 
 	known := claudeAccounts(cfg)
 	if len(known) == 0 {
@@ -307,6 +308,24 @@ func checkClaude(cfg config.Config) []result {
 	}
 	out = append(out, ok("claude:account", acct.Email))
 	return append(out, checkMemory(cfg, cwd)...)
+}
+
+// checkStrayState warns when the default account's config dir holds its own
+// .claude.json. Claude Code writes one there when it is launched with
+// CLAUDE_CONFIG_DIR=~/.claude. That state has no login and no MCP servers; the
+// default account's real state is ~/.claude.json. Nothing is deleted.
+func checkStrayState() []result {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	stray := filepath.Join(home, ".claude", ".claude.json")
+	if !exists(stray) {
+		return []result{ok("claude:stray-state", "no "+tildePath(stray))}
+	}
+	return []result{warn("claude:stray-state",
+		tildePath(stray)+" exists: a session was launched with CLAUDE_CONFIG_DIR=~/.claude, which has no login or MCP servers (the real state is ~/.claude.json)",
+		"launch with `claude -a personal` or plain `claude`, never CLAUDE_CONFIG_DIR=~/.claude; once no session uses it, move the stray file aside (mv ~/.claude/.claude.json ~/.claude/.claude.json.stray)")}
 }
 
 // checkMemoryLayout says whether the store still has the layout from before

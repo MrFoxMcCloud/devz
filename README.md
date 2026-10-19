@@ -119,6 +119,7 @@ summary line. Notable checks:
 | `pass:backup` | a store with no git remote: one copy, one disk |
 | `claude:accounts` | which Claude accounts are logged in on this machine |
 | `claude:account` | a `.claude-account` marker that names an account nobody is logged into |
+| `claude:stray-state` | a `~/.claude/.claude.json`, which Claude Code writes when launched with `CLAUDE_CONFIG_DIR=~/.claude`: state with no login or MCP servers. Nothing is deleted; the fix says to launch with `claude -a personal` and to move the file aside |
 | `claude:links` | an account whose settings, agents, commands or skills are a local copy and no longer the shared ones |
 | `claude:mcp` | an account whose MCP servers differ from the shared set |
 | `claude:launch` | VS Code or the shell starting Claude Code without applying the account rule, so every window or terminal lands on the default account |
@@ -202,6 +203,7 @@ devz claude account ...      # below
 devz claude sync ...         # below
 devz claude eject            # below
 devz claude exec ...         # below
+devz claude ps               # running sessions and their accounts
 devz claude worktree ...     # below
 devz claude memory ...       # below
 devz claude <name> ...       # anything else: devz-claude-<name> on PATH
@@ -272,7 +274,11 @@ This is the launch path, for the two places Claude Code is started from:
   arguments. That script is one line: `exec devz claude exec -- "$@"`.
 - **A shell.** `devz claude shell-init zsh` prints a `claude` function for your
   rc file. It uses `--keep-env`, so a `CLAUDE_CONFIG_DIR` you set by hand still
-  wins. Without the flag the marker always decides, which is right for an
+  wins. One that devz set for a parent session does not: every launch records
+  its choice in `DEVZ_CLAUDE_SET` (empty for the default account), and under
+  `--keep-env` a `CLAUDE_CONFIG_DIR` equal to it is inherited, so the marker
+  decides. A session on one account can start `claude` in a repo that uses
+  another and land on the right one. Without the flag the marker always decides, which is right for an
   editor, whose windows inherit an environment that says nothing about the
   folder they have open. A `CLAUDE_CONFIG_DIR` that names the default
   account's dir (`~/.claude`) is treated as the default account and unset:
@@ -288,6 +294,19 @@ This is the launch path, for the two places Claude Code is started from:
 devz prints the function and does not edit your rc file. `devz doctor`
 (`claude:launch`) says whether both places apply the rule. `DEVZ_BIN` in the
 printed function points one shell at another devz build.
+
+### `devz claude ps`
+
+```sh
+devz claude ps
+```
+
+Lists the running Claude Code sessions, one per line: pid, account alias,
+email and working directory. The account is read from each process's
+`CLAUDE_CONFIG_DIR` (unset means the default account), so it shows what a
+session is really running on, whatever the marker says now. Linux only, from
+`/proc`; processes it cannot read are skipped. On another OS it says so and
+exits 0.
 
 ### `devz claude sync`
 
