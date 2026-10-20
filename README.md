@@ -188,8 +188,12 @@ variable.
 works.
 
 `unlock` exists because processes spawned **without a TTY** — MCP servers,
-editor extensions — cannot show a passphrase prompt, so they fail at startup on
-a cold cache. Warming it once from a terminal is the fix.
+editor extensions — must not show a passphrase prompt. `exec` never asks: it
+passes `--pinentry-mode error` to gpg (through `PASSWORD_STORE_GPG_OPTS`), so a
+cold cache fails at once instead of a pinentry-curses prompt drawing over the
+terminal in `GPG_TTY`, which may be a running Claude Code session. Warming the
+cache once from a terminal is the fix. `env` and `show` still prompt, since
+they run from a terminal.
 
 ### `devz claude`
 

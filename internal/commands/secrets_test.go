@@ -165,6 +165,22 @@ func TestSecretsExecRejectsBeforeReading(t *testing.T) {
 	}
 }
 
+func TestWithoutPinentry(t *testing.T) {
+	for _, c := range []struct{ env, want []string }{
+		{[]string{"PATH=/bin"},
+			[]string{"PATH=/bin", "PASSWORD_STORE_GPG_OPTS=--pinentry-mode error"}},
+		{[]string{"PASSWORD_STORE_GPG_OPTS=", "PATH=/bin"},
+			[]string{"PATH=/bin", "PASSWORD_STORE_GPG_OPTS=--pinentry-mode error"}},
+		{[]string{"PASSWORD_STORE_GPG_OPTS=--armor", "PATH=/bin"},
+			[]string{"PATH=/bin", "PASSWORD_STORE_GPG_OPTS=--armor --pinentry-mode error"}},
+	} {
+		got := withoutPinentry(c.env)
+		if strings.Join(got, "\n") != strings.Join(c.want, "\n") {
+			t.Errorf("withoutPinentry(%q) = %q, want %q", c.env, got, c.want)
+		}
+	}
+}
+
 func TestWithEnvReplacesExisting(t *testing.T) {
 	got := withEnv([]string{"PATH=/bin", "TOKEN=stale", "TOKENX=keep"},
 		[]envSecret{{"TOKEN", "fresh=value"}})
