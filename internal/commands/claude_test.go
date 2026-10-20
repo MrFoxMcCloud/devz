@@ -318,12 +318,12 @@ func TestLegacyAccountArguments(t *testing.T) {
 
 func TestWithConfigDir(t *testing.T) {
 	env := []string{"PATH=/bin", "CLAUDE_CONFIG_DIR=/stale", "CLAUDE_CONFIG_DIRX=keep"}
-	if got := strings.Join(withConfigDir(env, "/new"), " "); got != "PATH=/bin CLAUDE_CONFIG_DIRX=keep CLAUDE_CONFIG_DIR=/new" {
+	if got := strings.Join(withConfigDir(env, "/new"), " "); got != "PATH=/bin CLAUDE_CONFIG_DIRX=keep CLAUDE_CONFIG_DIR=/new DEVZ_CLAUDE_SET=/new" {
 		t.Errorf("set: %s", got)
 	}
 	// The default account is reached by removing the variable, not by
 	// pointing it at ~/.claude.
-	if got := strings.Join(withConfigDir(env, ""), " "); got != "PATH=/bin CLAUDE_CONFIG_DIRX=keep" {
+	if got := strings.Join(withConfigDir(env, ""), " "); got != "PATH=/bin CLAUDE_CONFIG_DIRX=keep DEVZ_CLAUDE_SET=" {
 		t.Errorf("unset: %s", got)
 	}
 }
@@ -370,6 +370,49 @@ func TestLaunchEnv(t *testing.T) {
 	}
 	if got := run(append(base, "CLAUDE_CONFIG_DIR="+other), false, ""); got != work {
 		t.Errorf("without --keep-env the marker decides: got %q", got)
+	}
+	// A dir devz itself set for a parent session is inherited: the marker
+	// decides, even under --keep-env. That includes the default account, where
+	// both are empty.
+	other2 := filepath.Join(home, ".claude-other")
+	if got := run(append(base, "CLAUDE_CONFIG_DIR="+other2, "DEVZ_CLAUDE_SET="+other2), true, ""); got != work {
+		t.Errorf("inherited dir: got %q, want the marker's %q", got, work)
+	}
+	if got := run(append(base, "DEVZ_CLAUDE_SET="), true, ""); got != work {
+		t.Errorf("inherited default: got %q, want the marker's %q", got, work)
+	}
+	// One set by hand differs from DEVZ_CLAUDE_SET and is kept.
+	if got := run(append(base, "CLAUDE_CONFIG_DIR="+other, "DEVZ_CLAUDE_SET="+other2), true, ""); got != other {
+		t.Errorf("by-hand dir with a stale DEVZ_CLAUDE_SET: got %q, want %q", got, other)
+	}
+	// -a still beats an inherited dir, and every choice is recorded.
+	if got := run(append(base, "CLAUDE_CONFIG_DIR="+other2, "DEVZ_CLAUDE_SET="+other2), true, "personal"); got != "" {
+		t.Errorf("-a beats an inherited dir: got %q, want unset", got)
+	}
+	for _, c := range []struct {
+		env     []string
+		keep    bool
+		account string
+		want    string
+	}{
+		{base, false, "", work},
+		{base, true, "personal", ""},
+		{append(base, "CLAUDE_CONFIG_DIR="+def), true, "", ""},
+	} {
+		got, err := launchEnv(cfg, c.env, c.keep, c.account)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v := envValue(got, setMarkerVar); v != c.want {
+			t.Errorf("DEVZ_CLAUDE_SET = %q, want %q", v, c.want)
+		}
+		recorded := false
+		for _, kv := range got {
+			recorded = recorded || kv == setMarkerVar+"="+c.want
+		}
+		if !recorded {
+			t.Errorf("DEVZ_CLAUDE_SET not present in %v", got)
+		}
 	}
 	// The default account's own dir means the default account, which is
 	// reached by leaving the variable unset.
@@ -481,7 +524,7 @@ exit 0
 	}
 	// Built-ins first, then what is on PATH. The shadowed plugin is on PATH
 	// too; completing its name is harmless, since the built-in is what runs.
-	if got := strings.Join(completeClaude(ctx, nil), ","); got != "account,eject,exec,memory,shell-init,sync,worktree,account,hello" {
+	if got := strings.Join(completeClaude(ctx, nil), ","); got != "account,eject,exec,memory,ps,shell-init,sync,worktree,account,hello" {
 		t.Errorf("completeClaude = %s", got)
 	}
 }
@@ -542,7 +585,7 @@ func TestCompleteAsksTheCommand(t *testing.T) {
 	}{
 		{[]string{"secrets", "map"}, "team/token"},
 		{[]string{"secrets", "exec"}, "TEAM_TOKEN"},
-		{[]string{"claude"}, "account,eject,exec,memory,shell-init,sync,worktree"},
+		{[]string{"claude"}, "account,eject,exec,memory,ps,shell-init,sync,worktree"},
 		{[]string{"claude", "account"}, "show,set,pick,list,clear,resolve"},
 		{[]string{"claude", "account", "set"}, "me@personal.dev,personal,me@work.example,work"},
 		{[]string{"claude", "memory"}, "status,init,path,list,migrate"},
@@ -561,5 +604,68 @@ func TestCompleteAsksTheCommand(t *testing.T) {
 	}
 	if got := strings.Join(complete(ctx, app, []string{"memory"}), ","); got != "status,init,path,list,migrate" {
 		t.Errorf("complete([memory]) = %q", got)
+	}
+}
+
+func TestClaudePs(t *testing.T) {
+	cfg, _, home := claudeEnv(t)
+	proc := t.TempDir()
+	work := filepath.Join(home, ".claude-work")
+	add := func(pid, cmdline, environ, cwd string) {
+		t.Helper()
+		dir := filepath.Join(proc, pid)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if cmdline != "" {
+			os.WriteFile(filepath.Join(dir, "cmdline"), []byte(cmdline), 0o644)
+		}
+		if environ != "" {
+			os.WriteFile(filepath.Join(dir, "environ"), []byte(environ), 0o644)
+		}
+		if cwd != "" {
+			os.Symlink(cwd, filepath.Join(dir, "cwd"))
+		}
+	}
+	add("101", "/usr/bin/claude\x00--resume\x00", "PATH=/bin\x00", "/src/a")
+	add("102", "claude\x00", "PATH=/bin\x00CLAUDE_CONFIG_DIR="+work+"\x00DEVZ_CLAUDE_SET="+work+"\x00", "/src/b")
+	add("103", "node\x00/opt/bin/claude\x00", "CLAUDE_CONFIG_DIR="+home+"/.claude-gone\x00", "/src/c")
+	add("104", "vim\x00claude\x00", "PATH=/bin\x00", "/src/d")                // not claude
+	add("105", "claude\x00", "", "/src/e")                                    // environ unreadable
+	add("106", "claude\x00", "PATH=/bin\x00", "")                             // no cwd
+	add("107", "/home/x/devz\x00claude\x00ps\x00", "PATH=/bin\x00", "/src/f") // devz itself
+	os.WriteFile(filepath.Join(proc, "self"), []byte("x"), 0o644)             // non-pid entry
+
+	var buf bytes.Buffer
+	if err := claudePs(&buf, proc, claudeAccounts(cfg)); err != nil {
+		t.Fatal(err)
+	}
+	want := "101\tpersonal\tme@personal.dev\t/src/a\n" +
+		"102\twork\tme@work.example\t/src/b\n" +
+		"103\t?(" + tildePath(home+"/.claude-gone") + ")\t-\t/src/c\n"
+	if buf.String() != want {
+		t.Errorf("got:\n%swant:\n%s", buf.String(), want)
+	}
+
+	buf.Reset()
+	if err := claudePs(&buf, filepath.Join(proc, "missing"), nil); err != nil || !strings.Contains(buf.String(), "no Claude Code") {
+		t.Errorf("missing proc root: %q, %v", buf.String(), err)
+	}
+}
+
+func TestCheckStrayState(t *testing.T) {
+	_, _, home := claudeEnv(t)
+	if r := checkStrayState(); len(r) != 1 || r[0].id != "claude:stray-state" || r[0].status != statusOK {
+		t.Fatalf("clean: %+v", r)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", ".claude.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := checkStrayState()
+	if len(r) != 1 || r[0].status != statusWarn || r[0].fix == "" || !strings.Contains(r[0].fix, "claude -a personal") {
+		t.Fatalf("stray: %+v", r)
+	}
+	if !exists(filepath.Join(home, ".claude", ".claude.json")) {
+		t.Error("the stray file must not be touched")
 	}
 }
