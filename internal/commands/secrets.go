@@ -71,8 +71,8 @@ the secret:
     devz secrets map team/api-token TEAM_API_TOKEN
 
 Why unlock exists: processes spawned without a TTY -- MCP servers, editor
-extensions -- cannot show a passphrase prompt, so they fail at startup if the
-agent cache is cold. Warming it from a terminal once is the fix.`,
+extensions -- must not show a passphrase prompt, so exec never asks: on a cold
+agent cache it fails at once. Warming it from a terminal once is the fix.`,
 		Run:      runSecrets,
 		Complete: completeSecrets,
 	}
@@ -152,7 +152,7 @@ func runSecrets(ctx *cli.Context, args []string) error {
 // secretsEnv prints shell export lines for the configured entry->variable
 // mappings, optionally filtered to the named variables.
 func secretsEnv(ctx *cli.Context, want []string) error {
-	vars, err := readEnvSecrets(ctx, want)
+	vars, err := readEnvSecrets(ctx, want, true)
 	if err != nil {
 		return err
 	}
@@ -189,7 +189,7 @@ func secretsExec(ctx *cli.Context, args []string) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("not in secrets.envVars: %s", strings.Join(missing, ", "))
 	}
-	vars, err := readEnvSecrets(ctx, want)
+	vars, err := readEnvSecrets(ctx, want, false)
 	if err != nil {
 		return err
 	}
@@ -217,8 +217,9 @@ func withEnv(env []string, vars []envSecret) []string {
 type envSecret struct{ name, value string }
 
 // readEnvSecrets reads the secrets.envVars entries, sorted by entry so output
-// is stable, keeping only the named variables when any are given.
-func readEnvSecrets(ctx *cli.Context, want []string) ([]envSecret, error) {
+// is stable, keeping only the named variables when any are given. With
+// interactive false, a cold agent cache is an error rather than a prompt.
+func readEnvSecrets(ctx *cli.Context, want []string, interactive bool) ([]envSecret, error) {
 	mappings := ctx.Config.Secrets.EnvVars
 	if len(mappings) == 0 {
 		return nil, fmt.Errorf("no secrets.envVars configured in %s", mustConfigPath())
@@ -238,6 +239,9 @@ func readEnvSecrets(ctx *cli.Context, want []string) ([]envSecret, error) {
 		cmd := exec.Command("pass", "show", entry)
 		cmd.Stderr = ctx.Stderr
 		cmd.Env = passEnv(ctx.Config)
+		if !interactive {
+			cmd.Env = withoutPinentry(cmd.Env)
+		}
 		out, err := cmd.Output()
 		if err != nil {
 			return nil, fmt.Errorf("reading %s: %w (is the agent cache warm? try 'devz secrets unlock')", entry, err)
@@ -571,4 +575,25 @@ func passEnv(cfg config.Config) []string {
 		env = append(filtered, "PASSWORD_STORE_DIR="+store)
 	}
 	return env
+}
+
+// withoutPinentry makes gpg fail instead of asking for the passphrase, by
+// adding --pinentry-mode error to the options pass hands gpg. A process with
+// no TTY of its own still prompts otherwise: pinentry-curses opens GPG_TTY and
+// draws over whatever owns that terminal, such as the Claude Code session that
+// just started an MCP server.
+func withoutPinentry(env []string) []string {
+	const name = "PASSWORD_STORE_GPG_OPTS"
+	opts := "--pinentry-mode error"
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if value, found := strings.CutPrefix(kv, name+"="); found {
+			if value != "" {
+				opts = value + " " + opts
+			}
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, name+"="+opts)
 }
