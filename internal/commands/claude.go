@@ -144,7 +144,7 @@ func completeClaude(ctx *cli.Context, args []string) []string {
 		}
 	case "exec":
 		if len(args) == 1 {
-			return []string{"--keep-env", "--"}
+			return []string{"--keep-env", "--account", "--"}
 		}
 	case "sync":
 		switch {

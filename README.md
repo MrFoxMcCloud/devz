@@ -256,7 +256,7 @@ unsetting the variable, not by pointing it at `~/.claude`.
 ### `devz claude exec`
 
 ```sh
-devz claude exec [--keep-env] [--] <command> [args]
+devz claude exec [--keep-env] [--account NAME] [--] <command> [args]
 ```
 
 Runs a command, normally Claude Code, as the account the current directory's
@@ -274,7 +274,16 @@ This is the launch path, for the two places Claude Code is started from:
   rc file. It uses `--keep-env`, so a `CLAUDE_CONFIG_DIR` you set by hand still
   wins. Without the flag the marker always decides, which is right for an
   editor, whose windows inherit an environment that says nothing about the
-  folder they have open.
+  folder they have open. A `CLAUDE_CONFIG_DIR` that names the default
+  account's dir (`~/.claude`) is treated as the default account and unset:
+  Claude Code keeps that account's login and MCP servers in `~/.claude.json`,
+  so pointing the variable at `~/.claude` would start it with neither.
+- **One session as another account.** `--account NAME` (`-a`) runs this launch
+  as that account, whatever the marker or `CLAUDE_CONFIG_DIR` says, and does
+  not change the marker. NAME is an email, a prefix of one, or an alias such
+  as `personal`. The printed shell function takes it as its first argument:
+  `claude -a personal`. An account nobody is logged into exits 3 and runs
+  nothing.
 
 devz prints the function and does not edit your rc file. `devz doctor`
 (`claude:launch`) says whether both places apply the rule. `DEVZ_BIN` in the

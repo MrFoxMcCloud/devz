@@ -328,6 +328,67 @@ func TestWithConfigDir(t *testing.T) {
 	}
 }
 
+func TestLaunchEnv(t *testing.T) {
+	cfg, _, home := claudeEnv(t)
+	main, _, _ := repoWithWorktrees(t, home)
+	writeMarker(t, main, "work")
+	t.Chdir(main)
+	work := filepath.Join(home, ".claude-work")
+	def := filepath.Join(home, ".claude")
+	base := []string{"PATH=/bin"}
+
+	cfgDir := func(env []string) string { return envValue(env, "CLAUDE_CONFIG_DIR") }
+	run := func(env []string, keep bool, account string) string {
+		t.Helper()
+		got, err := launchEnv(cfg, env, keep, account)
+		if err != nil {
+			t.Fatalf("launchEnv(keep=%v, account=%q): %v", keep, account, err)
+		}
+		return cfgDir(got)
+	}
+
+	if got := run(base, false, ""); got != work {
+		t.Errorf("marker: got %q, want %q", got, work)
+	}
+	// --account beats the marker, for the default account by unsetting.
+	if got := run(base, true, "me@personal.dev"); got != "" {
+		t.Errorf("-a personal email: got %q, want unset", got)
+	}
+	if got := run(base, true, "personal"); got != "" {
+		t.Errorf("-a personal alias: got %q, want unset", got)
+	}
+	if got := run(append(base, "CLAUDE_CONFIG_DIR="+work), true, "personal"); got != "" {
+		t.Errorf("-a beats a set CLAUDE_CONFIG_DIR: got %q, want unset", got)
+	}
+	if got := run(base, true, "me@w"); got != work {
+		t.Errorf("-a by prefix: got %q, want %q", got, work)
+	}
+	// A dir set by hand wins under --keep-env, but not without it.
+	other := filepath.Join(home, "elsewhere")
+	if got := run(append(base, "CLAUDE_CONFIG_DIR="+other), true, ""); got != other {
+		t.Errorf("--keep-env keeps a dir set by hand: got %q", got)
+	}
+	if got := run(append(base, "CLAUDE_CONFIG_DIR="+other), false, ""); got != work {
+		t.Errorf("without --keep-env the marker decides: got %q", got)
+	}
+	// The default account's own dir means the default account, which is
+	// reached by leaving the variable unset.
+	for _, set := range []string{def, def + "/"} {
+		if got := run(append(base, "CLAUDE_CONFIG_DIR="+set), true, ""); got != "" {
+			t.Errorf("CLAUDE_CONFIG_DIR=%s: got %q, want unset", set, got)
+		}
+	}
+	// An account nobody is logged into is an error, never a fallback.
+	var unresolved unresolvedError
+	if _, err := launchEnv(cfg, base, true, "nobody@nowhere.example"); !errors.As(err, &unresolved) {
+		t.Errorf("unknown account: got %v, want unresolvedError", err)
+	}
+	// The other launch words reach the shell function's output.
+	if !strings.Contains(shellInit, "--account") {
+		t.Error("shellInit does not pass --account")
+	}
+}
+
 func TestCheckLaunch(t *testing.T) {
 	_, _, home := claudeEnv(t)
 	t.Setenv("SHELL", "/usr/bin/zsh")
